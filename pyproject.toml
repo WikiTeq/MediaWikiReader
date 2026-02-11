@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llama-index-readers-mediawiki"
+version = "0.1.0"
+description = "LlamaIndex reader for MediaWiki instances"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+dependencies = [
+    "llama-index-core>=0.14,<0.15",
+    "requests>=2.28",
+    "html2text>=2024.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["llama_index*"]
+namespaces = true
+
+[tool.llamahub]
+import_path = "llama_index.readers.mediawiki"
+contains_example = false
+
+[tool.llamahub.class_authors]
+MediaWikiReader = "wikiteq"
