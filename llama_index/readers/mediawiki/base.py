@@ -233,13 +233,6 @@ class MediaWikiReader(BasePydanticReader, ResourcesReaderMixin):
                 else:
                     break
 
-    def _get_all_pages(self) -> Iterator[Dict[str, Any]]:
-        """Deprecated: Use _get_all_pages_generator for efficient metadata.
-
-        Maintained for backward compatibility with existing internal callers.
-        """
-        for page in self._get_all_pages_generator():
-            yield {"title": page["title"]}
 
     def _get_page_contents(self, page_title: str) -> Optional[str]:
         """Fetch parsed content for a page.
@@ -294,7 +287,11 @@ class MediaWikiReader(BasePydanticReader, ResourcesReaderMixin):
 
     def list_resources(self, *args: Any, **kwargs: Any) -> List[str]:
         """Return a list of all page titles in the wiki."""
-        return [page["title"] for page in self._get_all_pages() if "title" in page]
+        return [
+            page["title"]
+            for page in self._get_all_pages_generator()
+            if "title" in page
+        ]
 
     def get_resource_info(
         self, resource_id: str, *args: Any, **kwargs: Any

@@ -179,7 +179,7 @@ class TestGetAllPages:
         })
         mock_session.get.side_effect = [first, second]
 
-        pages = list(reader._get_all_pages())
+        pages = list(reader._get_all_pages_generator())
         assert len(pages) == 2
         assert mock_session.get.call_count == 2
         mock_sleep.assert_called_once()
@@ -192,7 +192,7 @@ class TestGetAllPages:
         resp_ns1 = _mock_response(json_data={"query": {"pages": {"2": {"title": "Talk:A"}}}})
         mock_session.get.side_effect = [resp_ns0, resp_ns1]
 
-        pages = list(reader._get_all_pages())
+        pages = list(reader._get_all_pages_generator())
         assert len(pages) == 2
         assert mock_session.get.call_count == 2
 
