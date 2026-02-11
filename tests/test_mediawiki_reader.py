@@ -342,3 +342,16 @@ class TestResourcesInterface:
         assert info["B"]["url"] == "https://example.com/wiki/B"
         # Should only need 1 API call (consolidated)
         assert mock_session.get.call_count == 1
+
+    def test_get_resources_info_chunking(self, mock_session):
+        """Verify that get_resources_info respects batch_size."""
+        reader = _make_reader(batch_size=1)
+
+        # Mock responses for 2 separate batches
+        resp1 = _mock_response(json_data={"query": {"pages": {"1": {"title": "A"}}}})
+        resp2 = _mock_response(json_data={"query": {"pages": {"2": {"title": "B"}}}})
+        mock_session.get.side_effect = [resp1, resp2]
+
+        reader.get_resources_info(["A", "B"])
+
+        assert mock_session.get.call_count == 2

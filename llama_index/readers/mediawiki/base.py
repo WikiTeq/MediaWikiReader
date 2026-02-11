@@ -386,8 +386,8 @@ class MediaWikiReader(BasePydanticReader, ResourcesReaderMixin):
 
         result: Dict[str, Dict[str, Any]] = {}
         # Batch-fetch both URLs and timestamps in one API request (prop=info|revisions)
-        for i in range(0, len(page_titles), 50):
-            batch = page_titles[i : i + 50]
+        for i in range(0, len(page_titles), self.batch_size):
+            batch = page_titles[i : i + self.batch_size]
             titles_param = "|".join(batch)
             params = {
                 "action": "query",
