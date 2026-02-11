@@ -174,18 +174,27 @@ class TestGetAllPages(unittest.TestCase):
     """Page listing and pagination."""
 
     @patch("llama_index.readers.mediawiki.base.requests.Session")
-    def test_single_page_response(self, mock_sess_cls):
+    def test_generator_rich_response(self, mock_sess_cls):
         mock_session = Mock()
         mock_sess_cls.return_value = mock_session
         reader = _make_reader()
 
+        # Mock generator response format (query.pages)
         mock_session.get.return_value = _mock_response(json_data={
-            "query": {"allpages": [{"title": "Page 1"}, {"title": "Page 2"}]}
+            "query": {"pages": {
+                "1": {
+                    "title": "Page 1",
+                    "canonicalurl": "https://example.com/Page_1",
+                    "revisions": [{"timestamp": "2024-01-01T12:00:00Z"}]
+                }
+            }}
         })
 
-        pages = list(reader._get_all_pages())
-        self.assertEqual(len(pages), 2)
+        pages = list(reader._get_all_pages_generator())
+        self.assertEqual(len(pages), 1)
         self.assertEqual(pages[0]["title"], "Page 1")
+        self.assertEqual(pages[0]["url"], "https://example.com/Page_1")
+        self.assertEqual(pages[0]["last_modified"].year, 2024)
 
     @patch("llama_index.readers.mediawiki.base.time.sleep")
     @patch("llama_index.readers.mediawiki.base.requests.Session")
@@ -195,32 +204,37 @@ class TestGetAllPages(unittest.TestCase):
         reader = _make_reader()
 
         first = _mock_response(json_data={
-            "query": {"allpages": [{"title": "Page 1"}, {"title": "Page 2"}]},
-            "continue": {"apcontinue": "Page_3", "continue": "-||"},
+            "query": {"pages": {"1": {"title": "Page 1"}}},
+            "continue": {"gapcontinue": "Page_2", "continue": "gapcontinue||"},
         })
         second = _mock_response(json_data={
-            "query": {"allpages": [{"title": "Page 3"}, {"title": "Page 4"}]}
+            "query": {"pages": {"2": {"title": "Page 2"}}}
         })
         mock_session.get.side_effect = [first, second]
 
         pages = list(reader._get_all_pages())
-        self.assertEqual(len(pages), 4)
+        self.assertEqual(len(pages), 2)
         self.assertEqual(mock_session.get.call_count, 2)
         mock_sleep.assert_called_once()
 
     @patch("llama_index.readers.mediawiki.base.requests.Session")
-    def test_namespace_filtering(self, mock_sess_cls):
+    def test_namespace_iteration(self, mock_sess_cls):
         mock_session = Mock()
         mock_sess_cls.return_value = mock_session
-        reader = _make_reader(namespaces=[0, 1, 2])
+        # Multiple namespaces should trigger multiple API call series
+        reader = _make_reader(namespaces=[0, 1])
 
-        mock_session.get.return_value = _mock_response(json_data={
-            "query": {"allpages": [{"title": "Main Page"}]}
-        })
+        resp_ns0 = _mock_response(json_data={"query": {"pages": {"1": {"title": "A"}}}})
+        resp_ns1 = _mock_response(json_data={"query": {"pages": {"2": {"title": "Talk:A"}}}})
+        mock_session.get.side_effect = [resp_ns0, resp_ns1]
 
-        list(reader._get_all_pages())
-        params = mock_session.get.call_args[1]["params"]
-        self.assertEqual(params["apnamespace"], ["0", "1", "2"])
+        pages = list(reader._get_all_pages())
+        self.assertEqual(len(pages), 2)
+        self.assertEqual(mock_session.get.call_count, 2)
+
+        # Verify gapnamespace was passed correctly for each call
+        self.assertEqual(mock_session.get.call_args_list[0][1]["params"]["gapnamespace"], 0)
+        self.assertEqual(mock_session.get.call_args_list[1][1]["params"]["gapnamespace"], 1)
 
 
 class TestGetPageInfo(unittest.TestCase):
@@ -398,7 +412,7 @@ class TestResourcesInterface(unittest.TestCase):
         reader = _make_reader()
 
         mock_session.get.return_value = _mock_response(json_data={
-            "query": {"allpages": [{"title": "A"}, {"title": "B"}]}
+            "query": {"pages": {"1": {"title": "A"}, "2": {"title": "B"}}}
         })
 
         titles = reader.list_resources()

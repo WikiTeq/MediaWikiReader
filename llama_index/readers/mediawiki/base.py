@@ -174,34 +174,83 @@ class MediaWikiReader(BasePydanticReader, ResourcesReaderMixin):
                 logger.error("Invalid JSON response: %s", exc)
                 return None
 
+    def _get_all_pages_generator(self) -> Iterator[Dict[str, Any]]:
+        """Yield rich dictionaries for all pages using the generator API.
+
+        Each yielded dict contains:
+            - title (str)
+            - url (str or None)
+            - last_modified (datetime or None)
+
+        This is much more efficient than fetching titles first and then
+        querying metadata for each title.
+        """
+        # If namespaces is None, query all. If it's a list, we must iterate
+        # because gapnamespace only supports a single value.
+        namespaces = self.namespaces if self.namespaces is not None else [None]
+
+        for ns in namespaces:
+            continue_params: Dict[str, Any] = {}
+            while True:
+                params: Dict[str, Any] = {
+                    "action": "query",
+                    "generator": "allpages",
+                    "gaplimit": self.page_limit,
+                    "prop": "info|revisions",
+                    "inprop": "url",
+                    "rvprop": "timestamp",
+                    "format": "json",
+                    **continue_params,
+                }
+                if ns is not None:
+                    params["gapnamespace"] = ns
+
+                data = self._make_api_request(params)
+                if not data:
+                    break
+
+                pages_dict = data.get("query", {}).get("pages", {})
+                # generator=allpages returns a dict keyed by page ID
+                for page_data in pages_dict.values():
+                    title = page_data.get("title")
+                    if not title:
+                        continue
+
+                    url = page_data.get("canonicalurl")
+
+                    last_modified = None
+                    revisions = page_data.get("revisions", [])
+                    if revisions:
+                        ts_str = revisions[0].get("timestamp")
+                        if ts_str:
+                            try:
+                                # MediaWiki uses ISO8601 with Z
+                                last_modified = datetime.fromisoformat(
+                                    ts_str.replace("Z", "+00:00")
+                                )
+                            except (ValueError, TypeError):
+                                pass
+
+                    yield {
+                        "title": title,
+                        "url": url,
+                        "last_modified": last_modified,
+                    }
+
+                continue_info = data.get("continue")
+                if continue_info:
+                    continue_params = continue_info
+                    time.sleep(self.request_delay)
+                else:
+                    break
+
     def _get_all_pages(self) -> Iterator[Dict[str, Any]]:
-        """Yield all pages from the MediaWiki instance using pagination."""
-        continue_params: Dict[str, Any] = {}
+        """Deprecated: Use _get_all_pages_generator for efficient metadata.
 
-        while True:
-            params: Dict[str, Any] = {
-                "action": "query",
-                "list": "allpages",
-                "aplimit": self.page_limit,
-                **continue_params,
-            }
-
-            if self.namespaces is not None:
-                params["apnamespace"] = [str(ns) for ns in self.namespaces]
-
-            data = self._make_api_request(params)
-            if not data:
-                break
-
-            pages = data.get("query", {}).get("allpages", [])
-            yield from pages
-
-            continue_info = data.get("continue")
-            if continue_info:
-                continue_params = continue_info
-                time.sleep(self.request_delay)
-            else:
-                break
+        Maintained for backward compatibility with existing internal callers.
+        """
+        for page in self._get_all_pages_generator():
+            yield {"title": page["title"]}
 
     def _get_page_data(
         self, page_title: str, **api_params: Any
@@ -444,8 +493,14 @@ class MediaWikiReader(BasePydanticReader, ResourcesReaderMixin):
     # -- BasePydanticReader / BaseReader interface -----------------------------
 
     def lazy_load_data(self, *args: Any, **kwargs: Any) -> Iterator[Document]:
-        """Yield one Document per page in the wiki."""
-        for page_title in self.list_resources():
-            docs = self.load_resource(page_title)
+        """Yield one Document per page in the wiki.
+
+        Optimized to fetch content while traversing pages to avoid N+1 queries.
+        Note: Content (the 'parse' action) still requires a separate call per page
+        as the 'text' property is too large for the query generator.
+        """
+        for page_record in self._get_all_pages_generator():
+            title = page_record["title"]
+            docs = self.load_resource(title)
             yield from docs
             time.sleep(self.request_delay)
