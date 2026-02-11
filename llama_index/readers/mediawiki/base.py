@@ -77,8 +77,6 @@ class MediaWikiReader(BasePydanticReader, ResourcesReaderMixin):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._validate_config()
-        self._session = requests.Session()
-        self._session.headers.update({"User-Agent": self.user_agent})
         logger.info("Initialized MediaWikiReader for %s", self.api_url)
 
     def _validate_config(self) -> None:
@@ -106,17 +104,6 @@ class MediaWikiReader(BasePydanticReader, ResourcesReaderMixin):
             self._session.headers.update({"User-Agent": self.user_agent})
         return self._session
 
-    def close(self) -> None:
-        """Close the HTTP session."""
-        if self._session is not None:
-            self._session.close()
-            self._session = None
-
-    def __enter__(self) -> "MediaWikiReader":
-        return self
-
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        self.close()
 
     # -- Internal API helpers -------------------------------------------------
 
@@ -130,49 +117,51 @@ class MediaWikiReader(BasePydanticReader, ResourcesReaderMixin):
         Args:
             params: Dictionary of API parameters (``format=json`` is added
                 automatically).
-            max_retries: Override for the configured max retry count.
+            max_retries: Optional override for the number of retry attempts.
 
         Returns:
-            Parsed JSON response, or ``None`` if all retries failed.
+            Parsed JSON response, or ``None`` if the request failed.
         """
-        if max_retries is None:
-            max_retries = self.max_retries
+        params["format"] = "json"
 
-        if max_retries <= 0:
-            return None
+        # Determine total attempts (at least 1 if max_retries=0)
+        retries = max_retries if max_retries is not None else self.max_retries
+        max_attempts = retries + 1
 
-        for attempt in range(max_retries):
+        for attempt in range(max_attempts):
             try:
-                params["format"] = "json"
                 response = self.session.get(
                     self.api_url, params=params, timeout=self.timeout
                 )
 
                 if response.status_code == 429:
-                    retry_after = int(response.headers.get("Retry-After", 5))
-                    logger.warning("Rate limited. Waiting %d seconds...", retry_after)
-                    time.sleep(retry_after)
-                    continue
+                    if attempt < max_attempts - 1:
+                        retry_after = int(response.headers.get("Retry-After", 5))
+                        logger.warning("Rate limited. Waiting %d seconds...", retry_after)
+                        time.sleep(retry_after)
+                        continue
+                    else:
+                        logger.error("Rate limited and no more retries left.")
+                        return None
 
                 response.raise_for_status()
                 return response.json()
 
-            except requests.exceptions.RequestException as exc:
-                logger.warning(
-                    "API request failed (attempt %d/%d): %s",
-                    attempt + 1,
-                    max_retries,
-                    exc,
-                )
-                if attempt < max_retries - 1:
+            except (requests.exceptions.RequestException, ValueError) as exc:
+                if attempt < max_attempts - 1:
+                    logger.warning(
+                        "API request failed (attempt %d/%d): %s",
+                        attempt + 1,
+                        max_attempts,
+                        exc,
+                    )
                     time.sleep(2**attempt)
+                    continue
                 else:
-                    logger.error("API request failed after %d attempts", max_retries)
+                    logger.error("API request failed after %d attempts: %s", max_attempts, exc)
                     return None
 
-            except ValueError as exc:
-                logger.error("Invalid JSON response: %s", exc)
-                return None
+        return None
 
     def _get_all_pages_generator(self) -> Iterator[Dict[str, Any]]:
         """Yield rich dictionaries for all pages using the generator API.
@@ -252,46 +241,12 @@ class MediaWikiReader(BasePydanticReader, ResourcesReaderMixin):
         for page in self._get_all_pages_generator():
             yield {"title": page["title"]}
 
-    def _get_page_data(
-        self, page_title: str, **api_params: Any
-    ) -> Optional[Dict[str, Any]]:
-        """Query a single MediaWiki page and return its data dict.
-
-        Returns ``None`` if the page is missing or the request failed.
-        """
-        params = {"action": "query", "titles": page_title, **api_params}
-
-        data = self._make_api_request(params)
-        if not data:
-            return None
-
-        pages = data.get("query", {}).get("pages", {})
-        if not pages:
-            return None
-
-        page_data = next(iter(pages.values()))
-
-        if page_data.get("pageid") == -1 or page_data.get("missing") is True:
-            logger.warning("Page '%s' is missing", page_title)
-            return None
-
-        return page_data
-
-    def _get_page_info(self, page_title: str) -> Optional[tuple]:
-        """Fetch parsed content and canonical URL for a page.
+    def _get_page_contents(self, page_title: str) -> Optional[str]:
+        """Fetch parsed content for a page.
 
         Returns:
-            ``(clean_text, canonical_url)`` or ``None``.
+            Clean text content or ``None``.
         """
-        url_data = self._get_page_data(page_title, prop="info", inprop="url")
-        if not url_data:
-            return None
-
-        canonical_url = url_data.get("canonicalurl")
-        if not canonical_url:
-            logger.warning("No URL found for page '%s'", page_title)
-            return None
-
         params = {
             "action": "parse",
             "page": page_title,
@@ -316,8 +271,7 @@ class MediaWikiReader(BasePydanticReader, ResourcesReaderMixin):
             logger.warning("No content in parse result for page '%s'", page_title)
             return None
 
-        clean_content = self._html_to_clean_text(html_content)
-        return clean_content, canonical_url
+        return self._html_to_clean_text(html_content)
 
     def _html_to_clean_text(self, html_content: str) -> str:
         """Convert MediaWiki HTML to clean Markdown text."""
@@ -335,65 +289,6 @@ class MediaWikiReader(BasePydanticReader, ResourcesReaderMixin):
             clean_text = re.sub(r"<[^>]+>", "", html_content)
             clean_text = re.sub(r"\s+", " ", clean_text).strip()
             return clean_text
-
-    def _get_pages_last_modified(
-        self, page_titles: List[str]
-    ) -> Dict[str, Optional[datetime]]:
-        """Get last-modified timestamps for multiple pages in a single API call."""
-        if not page_titles:
-            return {}
-
-        titles_param = "|".join(page_titles)
-        params = {
-            "action": "query",
-            "titles": titles_param,
-            "prop": "revisions",
-            "rvprop": "timestamp",
-        }
-
-        data = self._make_api_request(params)
-        if not data:
-            return {title: None for title in page_titles}
-
-        pages = data.get("query", {}).get("pages", {})
-        title_to_page = {
-            page_info.get("title"): page_info for page_info in pages.values()
-        }
-
-        result: Dict[str, Optional[datetime]] = {}
-        for title in page_titles:
-            page_data = title_to_page.get(title)
-            if not page_data or "pageid" not in page_data:
-                result[title] = None
-                continue
-
-            revisions = page_data.get("revisions", [])
-            if revisions:
-                timestamp_str = revisions[0].get("timestamp")
-                if timestamp_str:
-                    try:
-                        result[title] = datetime.fromisoformat(timestamp_str)
-                    except ValueError as exc:
-                        logger.warning(
-                            "Failed to parse timestamp '%s' for page '%s': %s",
-                            timestamp_str,
-                            title,
-                            exc,
-                        )
-                        result[title] = None
-                else:
-                    result[title] = None
-            else:
-                result[title] = None
-
-        return result
-
-    def _get_page_url(self, page_title: str) -> Optional[str]:
-        """Return the canonical URL for a page, or ``None``."""
-        url_data = self._get_page_data(page_title, prop="info", inprop="url")
-        if not url_data:
-            return None
-        return url_data.get("canonicalurl")
 
     # -- ResourcesReaderMixin implementation ----------------------------------
 
@@ -413,33 +308,57 @@ class MediaWikiReader(BasePydanticReader, ResourcesReaderMixin):
         return info.get(resource_id, {"last_modified": None, "url": None})
 
     def load_resource(
-        self, resource_id: str, *args: Any, **kwargs: Any
+        self,
+        resource_id: str,
+        resource_url: Optional[str] = None,
+        last_modified: Optional[datetime] = None,
+        **kwargs: Any,
     ) -> List[Document]:
         """Load a single page as a list containing one Document.
 
+        Consolidated to minimize API calls. If resource_url and last_modified are
+        provided, we only perform the 'parse' API call.
+
         Args:
             resource_id: The page title.
+            resource_url: Optional pre-fetched canonical URL.
+            last_modified: Optional pre-fetched last-modified timestamp.
 
         Returns:
             A one-element list with the page Document, or an empty list on failure.
         """
-        page_info = self._get_page_info(resource_id)
-        if page_info is None:
-            return []
+        if resource_url and last_modified:
+            # We already have metadata, just need the content
+            content = self._get_page_contents(resource_id)
+            if not content:
+                return []
+        else:
+            # Fallback: Fetch missing metadata first
+            info_map = self.get_resources_info([resource_id])
+            info = info_map.get(resource_id)
 
-        clean_text, canonical_url = page_info
+            if not info or not info.get("url"):
+                logger.warning("Metadata not found for fallback page '%s'", resource_id)
+                return []
 
-        # Fetch last_modified for metadata
-        timestamps = self._get_pages_last_modified([resource_id])
-        last_modified = timestamps.get(resource_id)
+            resource_url = info["url"]
+            last_modified = info["last_modified"]
 
+            content = self._get_page_contents(resource_id)
+            if not content:
+                return []
+
+        # Build Document
         doc = Document(
-            text=clean_text,
+            text=content,
+            id_=f"mediawiki:{resource_id}",
             metadata={
-                "url": canonical_url,
                 "title": resource_id,
+                "url": resource_url,
                 "last_modified": last_modified.isoformat() if last_modified else None,
             },
+            excluded_llm_metadata_keys=["url", "last_modified"],
+            excluded_embed_metadata_keys=["url", "last_modified"],
         )
         return [doc]
 
@@ -462,32 +381,53 @@ class MediaWikiReader(BasePydanticReader, ResourcesReaderMixin):
             Dict mapping each title to
             ``{"last_modified": datetime | None, "url": str | None}``.
         """
-        timestamps = self._get_pages_last_modified(page_titles)
+        if not page_titles:
+            return {}
 
-        # Batch-fetch URLs via the info API
-        urls: Dict[str, Optional[str]] = {}
-        if page_titles:
-            titles_param = "|".join(page_titles)
+        result: Dict[str, Dict[str, Any]] = {}
+        # Batch-fetch both URLs and timestamps in one API request (prop=info|revisions)
+        for i in range(0, len(page_titles), 50):
+            batch = page_titles[i : i + 50]
+            titles_param = "|".join(batch)
             params = {
                 "action": "query",
                 "titles": titles_param,
-                "prop": "info",
+                "prop": "info|revisions",
                 "inprop": "url",
+                "rvprop": "timestamp",
             }
             data = self._make_api_request(params)
-            if data:
-                pages = data.get("query", {}).get("pages", {})
-                for page_data in pages.values():
-                    title = page_data.get("title")
-                    if title:
-                        urls[title] = page_data.get("canonicalurl")
+            if not data:
+                for title in batch:
+                    result[title] = {"last_modified": None, "url": None}
+                continue
 
-        result: Dict[str, Dict[str, Any]] = {}
-        for title in page_titles:
-            result[title] = {
-                "last_modified": timestamps.get(title),
-                "url": urls.get(title),
+            pages = data.get("query", {}).get("pages", {})
+            title_to_page = {
+                pg.get("title"): pg for pg in pages.values() if pg.get("title")
             }
+
+            for title in batch:
+                page_data = title_to_page.get(title)
+                last_modified = None
+                url = None
+                if page_data and "missing" not in page_data:
+                    url = page_data.get("canonicalurl")
+                    revisions = page_data.get("revisions", [])
+                    if revisions:
+                        ts_str = revisions[0].get("timestamp")
+                        if ts_str:
+                            try:
+                                last_modified = datetime.fromisoformat(
+                                    ts_str.replace("Z", "+00:00")
+                                )
+                            except (ValueError, TypeError):
+                                pass
+
+                result[title] = {
+                    "last_modified": last_modified,
+                    "url": url,
+                }
         return result
 
     # -- BasePydanticReader / BaseReader interface -----------------------------
@@ -501,6 +441,11 @@ class MediaWikiReader(BasePydanticReader, ResourcesReaderMixin):
         """
         for page_record in self._get_all_pages_generator():
             title = page_record["title"]
-            docs = self.load_resource(title)
+            url = page_record.get("url")
+            last_modified = page_record.get("last_modified")
+
+            docs = self.load_resource(
+                title, resource_url=url, last_modified=last_modified
+            )
             yield from docs
             time.sleep(self.request_delay)
