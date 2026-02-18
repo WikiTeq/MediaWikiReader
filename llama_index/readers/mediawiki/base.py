@@ -28,8 +28,7 @@ class MediaWikiReader(BasePydanticReader):
     last_modified).
 
     Implements BasePydanticReader (for serialization / LlamaHub compatibility)
-    and provides load_resource for resource-based use. get_resources_info
-    supports efficient batched timestamp/URL retrieval without N+1 API calls.
+    and provides load_resource and get_resource_info for resource-based use.
     """
 
     model_config = {"arbitrary_types_allowed": True}
@@ -53,11 +52,6 @@ class MediaWikiReader(BasePydanticReader):
         default=500,
         gt=0,
         description="When listing pages (allpages generator): max page titles per API call. Each request returns up to this many; pagination continues until the wiki is fully listed.",
-    )
-    batch_size: int = Field(
-        default=50,
-        gt=0,
-        description="When fetching metadata (URL, last_modified) for multiple pages: number of titles per API call. Used by get_resources_info.",
     )
     max_retries: int = Field(
         default=3,
@@ -337,7 +331,7 @@ class MediaWikiReader(BasePydanticReader):
         """Load a single page as a list containing one Document.
 
         Caller must supply resource_url and last_modified (e.g. from
-        get_resources_info or from the allpages generator). Only the 'parse'
+        get_resource_info or from the allpages generator). Only the 'parse'
         API call is made.
 
         Args:
@@ -366,71 +360,49 @@ class MediaWikiReader(BasePydanticReader):
         )
         return [doc]
 
-    # -- Custom batched method (NOT part of LlamaIndex API) -------------------
+    # -- Resource info (single page) ------------------------------------------
 
-    def get_resources_info(
-        self, page_titles: List[str]
-    ) -> Dict[str, Dict[str, Any]]:
-        """Return info for multiple pages in batched API calls.
+    def get_resource_info(self, resource_id: str) -> Dict[str, Any]:
+        """Return metadata for a single page (URL and last_modified).
 
-        Custom extension to retrieve ``last_modified`` and ``url`` for many pages
-        in batched API requests (avoids N+1 round-trips).
+        Makes one API call. Use with load_resource when you need to fetch
+        URL and last_modified for a page title.
 
         Args:
-            page_titles: List of page titles.
+            resource_id: Page title.
 
         Returns:
-            Dict mapping each title to
             ``{"last_modified": datetime | None, "url": str | None}``.
         """
-        if not page_titles:
-            return {}
+        params = {
+            "action": "query",
+            "titles": resource_id,
+            "prop": "info|revisions",
+            "inprop": "url",
+            "rvprop": "timestamp",
+        }
+        data = self._make_api_request(params)
+        if not data:
+            return {"last_modified": None, "url": None}
 
-        result: Dict[str, Dict[str, Any]] = {}
-        # Batch-fetch both URLs and timestamps in one API request (prop=info|revisions)
-        for i in range(0, len(page_titles), self.batch_size):
-            batch = page_titles[i : i + self.batch_size]
-            titles_param = "|".join(batch)
-            params = {
-                "action": "query",
-                "titles": titles_param,
-                "prop": "info|revisions",
-                "inprop": "url",
-                "rvprop": "timestamp",
-            }
-            data = self._make_api_request(params)
-            if not data:
-                for title in batch:
-                    result[title] = {"last_modified": None, "url": None}
-                continue
+        pages = data.get("query", {}).get("pages", {})
+        page_data = next((p for p in pages.values() if p.get("title")), None)
+        last_modified = None
+        url = None
+        if page_data and "missing" not in page_data:
+            url = page_data.get("canonicalurl")
+            revisions = page_data.get("revisions", [])
+            if revisions:
+                ts_str = revisions[0].get("timestamp")
+                if ts_str:
+                    try:
+                        last_modified = datetime.fromisoformat(
+                            ts_str.replace("Z", "+00:00")
+                        )
+                    except (ValueError, TypeError):
+                        pass
 
-            pages = data.get("query", {}).get("pages", {})
-            title_to_page = {
-                pg.get("title"): pg for pg in pages.values() if pg.get("title")
-            }
-
-            for title in batch:
-                page_data = title_to_page.get(title)
-                last_modified = None
-                url = None
-                if page_data and "missing" not in page_data:
-                    url = page_data.get("canonicalurl")
-                    revisions = page_data.get("revisions", [])
-                    if revisions:
-                        ts_str = revisions[0].get("timestamp")
-                        if ts_str:
-                            try:
-                                last_modified = datetime.fromisoformat(
-                                    ts_str.replace("Z", "+00:00")
-                                )
-                            except (ValueError, TypeError):
-                                pass
-
-                result[title] = {
-                    "last_modified": last_modified,
-                    "url": url,
-                }
-        return result
+        return {"last_modified": last_modified, "url": url}
 
     # -- BasePydanticReader / BaseReader interface -----------------------------
 

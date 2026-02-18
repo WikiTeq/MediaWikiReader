@@ -74,10 +74,6 @@ class TestMediaWikiReaderInit:
         with pytest.raises(ValidationError, match="page_limit"):
             _make_reader(page_limit=0)
 
-    def test_negative_batch_size_raises(self, mock_session_cls):
-        with pytest.raises(ValidationError, match="batch_size"):
-            _make_reader(batch_size=-1)
-
     def test_negative_max_retries_raises(self, mock_session_cls):
         with pytest.raises(ValidationError, match="max_retries"):
             _make_reader(max_retries=-1)
@@ -388,39 +384,18 @@ class TestResourcesInterface:
         )
         assert docs == []
 
-    def test_get_resources_info_batched(self, reader, mock_session):
-        ts_url_resp = _mock_response(json_data={
-            "query": {"pages": {
-                "1": {
-                    "title": "A", "pageid": 1,
-                    "canonicalurl": "https://example.com/wiki/A",
-                    "revisions": [{"timestamp": "2024-01-01T00:00:00Z"}],
-                },
-                "2": {
-                    "title": "B", "pageid": 2,
-                    "canonicalurl": "https://example.com/wiki/B",
-                    "revisions": [{"timestamp": "2024-02-01T00:00:00Z"}],
-                },
-            }}
+    def test_get_resource_info(self, reader, mock_session):
+        """get_resource_info returns url and last_modified for a single page."""
+        mock_session.get.return_value = _mock_response(json_data={
+            "query": {"pages": {"123": {
+                "pageid": 123, "title": "Page",
+                "canonicalurl": "https://example.com/wiki/Page",
+                "revisions": [{"timestamp": "2024-06-01T00:00:00Z"}],
+            }}}
         })
-        mock_session.get.side_effect = [ts_url_resp]
 
-        info = reader.get_resources_info(["A", "B"])
-        assert len(info) == 2
-        assert info["A"]["last_modified"] is not None
-        assert info["B"]["url"] == "https://example.com/wiki/B"
-        # Should only need 1 API call (consolidated)
+        info = reader.get_resource_info("Page")
+        assert "last_modified" in info
+        assert "url" in info
+        assert info["url"] == "https://example.com/wiki/Page"
         assert mock_session.get.call_count == 1
-
-    def test_get_resources_info_chunking(self, mock_session):
-        """Verify that get_resources_info respects batch_size."""
-        reader = _make_reader(batch_size=1)
-
-        # Mock responses for 2 separate batches
-        resp1 = _mock_response(json_data={"query": {"pages": {"1": {"title": "A"}}}})
-        resp2 = _mock_response(json_data={"query": {"pages": {"2": {"title": "B"}}}})
-        mock_session.get.side_effect = [resp1, resp2]
-
-        reader.get_resources_info(["A", "B"])
-
-        assert mock_session.get.call_count == 2
