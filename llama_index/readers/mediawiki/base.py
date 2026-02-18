@@ -30,7 +30,7 @@ class MediaWikiReader(BasePydanticReader):
     Implements BasePydanticReader (for serialization / LlamaHub compatibility)
     and provides get_resource_info and load_resource for resource-based use.
     Additionally exposes get_resources_info for efficient batched timestamp/URL
-    retrieval (used by downstream jobs to avoid N+1 API calls).
+    retrieval without N+1 API calls.
     """
 
     model_config = {"arbitrary_types_allowed": True}
@@ -361,8 +361,8 @@ class MediaWikiReader(BasePydanticReader):
     ) -> Dict[str, Dict[str, Any]]:
         """Return info for multiple pages in batched API calls.
 
-        Custom extension so that downstream jobs can retrieve ``last_modified``
-        and ``url`` for many pages without N+1 API round-trips.
+        Custom extension to retrieve ``last_modified`` and ``url`` for many pages
+        in batched API requests (avoids N+1 round-trips).
 
         Args:
             page_titles: List of page titles.
