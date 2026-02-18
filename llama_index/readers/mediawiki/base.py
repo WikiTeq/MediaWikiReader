@@ -210,18 +210,11 @@ class MediaWikiReader(BasePydanticReader):
                 # Extract last_modified from page revision timestamp
                 last_modified: Optional[datetime] = None
                 try:
-                    rev_ts = page.revision
-                    if rev_ts:
-                        last_modified = datetime.fromtimestamp(
-                            0, tz=timezone.utc
+                    ts = page.last_rev_time
+                    if ts:
+                        last_modified = datetime(
+                            *ts[:6], tzinfo=timezone.utc
                         )
-                        # mwclient stores revisions; .revision is the
-                        # latest revision timestamp as a time.struct_time
-                        ts = page.last_rev_time
-                        if ts:
-                            last_modified = datetime(
-                                *ts[:6], tzinfo=timezone.utc
-                            )
                 except Exception:
                     pass
 
