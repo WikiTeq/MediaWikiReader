@@ -30,6 +30,12 @@ class MediaWikiReader(BasePydanticReader):
     Uses `mwclient` for all API interactions. Supports authentication via
     :meth:`login`.
 
+    **Ingestion scale:** Full ingestion (e.g. :meth:`lazy_load_data`) lists
+    pages via the allpages API, then fetches parsed content with one
+    ``parse`` API call per page. MediaWiki's parse API does not support
+    batch requests, so large wikis require many HTTP requests. This is a
+    known limitation of the MediaWiki API.
+
     Example::
 
         reader = MediaWikiReader(host="en.wikipedia.org")
@@ -374,7 +380,8 @@ class MediaWikiReader(BasePydanticReader):
         """Yield one Document per page in the wiki.
 
         Iterates all pages via mwclient's allpages, then fetches parsed
-        content for each page individually.
+        content for each page with one parse API call per page (MediaWiki
+        has no batch parse API; see class docstring for scale notes).
         """
         for page_record in self._get_all_pages_generator():
             url = page_record.get("url")
