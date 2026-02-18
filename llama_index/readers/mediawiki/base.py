@@ -28,9 +28,8 @@ class MediaWikiReader(BasePydanticReader):
     last_modified).
 
     Implements BasePydanticReader (for serialization / LlamaHub compatibility)
-    and provides get_resource_info and load_resource for resource-based use.
-    Additionally exposes get_resources_info for efficient batched timestamp/URL
-    retrieval without N+1 API calls.
+    and provides load_resource for resource-based use. get_resources_info
+    supports efficient batched timestamp/URL retrieval without N+1 API calls.
     """
 
     model_config = {"arbitrary_types_allowed": True}
@@ -327,18 +326,7 @@ class MediaWikiReader(BasePydanticReader):
             clean_text = re.sub(r"\s+", " ", clean_text).strip()
             return clean_text
 
-    # -- Resource API (get_resource_info, load_resource) ----------------------
-
-    def get_resource_info(
-        self, resource_id: str, *args: Any, **kwargs: Any
-    ) -> Dict:
-        """Return info for a single page.
-
-        Returns:
-            ``{"last_modified": datetime | None, "url": str | None}``
-        """
-        info = self.get_resources_info([resource_id])
-        return info.get(resource_id, {"last_modified": None, "url": None})
+    # -- Resource API (load_resource) -----------------------------------------
 
     def load_resource(
         self,

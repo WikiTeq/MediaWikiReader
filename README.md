@@ -7,7 +7,7 @@ The MediaWiki Reader loads pages from any [MediaWiki](https://www.mediawiki.org/
 ### Features
 
 - **Any MediaWiki instance** — Use `api_url` to point at any wiki (e.g. `https://en.wikipedia.org/w/api.php`).
-- **Resource-based API** — Implements `load_resource` and `get_resource_info` for use with LlamaIndex ingestion and RAG pipelines.
+- **Resource-based API** — Implements `load_resource`; use `get_resources_info` for batched metadata. For LlamaIndex ingestion and RAG pipelines.
 - **Efficient listing** — Batched API calls for page metadata; optional `namespaces` filter.
 - **HTML to text** — Converts wiki HTML to clean text via html2text (configurable).
 

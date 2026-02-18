@@ -388,23 +388,6 @@ class TestResourcesInterface:
         )
         assert docs == []
 
-    def test_get_resource_info(self, reader, mock_session):
-        ts_url_resp = _mock_response(json_data={
-            "query": {"pages": {"1": {
-                "pageid": 1, "title": "Page",
-                "canonicalurl": "https://example.com/wiki/Page",
-                "revisions": [{"timestamp": "2024-06-01T00:00:00Z"}],
-            }}}
-        })
-
-        mock_session.get.side_effect = [ts_url_resp]
-
-        info = reader.get_resource_info("Page")
-        assert "last_modified" in info
-        assert "url" in info
-        assert info["url"] == "https://example.com/wiki/Page"
-        assert mock_session.get.call_count == 1
-
     def test_get_resources_info_batched(self, reader, mock_session):
         ts_url_resp = _mock_response(json_data={
             "query": {"pages": {
