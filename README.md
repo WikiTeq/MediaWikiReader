@@ -64,7 +64,7 @@ reader = MediaWikiReader(
 | `batch_size`   | `int`    | `50`    | When fetching metadata for multiple pages: titles per API call (get_resources_info, load_resource fallback). |
 | `max_retries`  | `int`    | `3`     | Retry attempts for failed requests. |
 | `timeout`      | `int`    | `30`    | HTTP request timeout in seconds. |
-| `namespaces`   | `list[int] \| None` | `None` | Namespace IDs to include; `None` = all. |
+| `namespaces`   | `list[int] \| None` | `None` | Namespace IDs to list; `None` = wiki content namespaces from siteinfo API ([$wgContentNamespaces](https://www.mediawiki.org/wiki/Manual:$wgContentNamespaces)). |
 | `logger`       | `logging.Logger` | module logger | Logger instance (injectable for tests or custom logging). Not serialized. |
 
 ### License

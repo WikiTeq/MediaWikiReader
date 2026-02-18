@@ -64,7 +64,7 @@ class MediaWikiReader(BasePydanticReader):
     )
     namespaces: Optional[List[int]] = Field(
         default=None,
-        description="List of namespace IDs to include (None = all namespaces)",
+        description="Namespace IDs to list (None = wiki content namespaces from siteinfo API, i.e. $wgContentNamespaces). Set explicitly to override.",
     )
     logger: logging.Logger = Field(
         default_factory=lambda: _internal_logger,
@@ -166,6 +166,47 @@ class MediaWikiReader(BasePydanticReader):
 
         return None
 
+    def _fetch_content_namespace_ids(self) -> List[int]:
+        """Return namespace IDs that the wiki marks as content (see $wgContentNamespaces).
+
+        Uses action=query&meta=siteinfo&siprop=namespaces and filters for the
+        \"content\" attribute. See https://www.mediawiki.org/wiki/Manual:$wgContentNamespaces
+        and https://www.mediawiki.org/wiki/API:Siteinfo.
+
+        Returns:
+            List of namespace IDs (e.g. [0] for main only). On API failure or
+            missing data, returns [0] as a safe default.
+        """
+        data = self._make_api_request({
+            "action": "query",
+            "meta": "siteinfo",
+            "siprop": "namespaces",
+        })
+        if not data:
+            self.logger.warning("Could not fetch siteinfo; defaulting to main namespace (0).")
+            return [0]
+
+        namespaces = data.get("query", {}).get("namespaces", {})
+        ids: List[int] = []
+        for ns_key, ns_data in namespaces.items():
+            if not isinstance(ns_data, dict):
+                continue
+            if ns_data.get("content") is not True:
+                continue
+            # id can be in the value or implied by the key (string or int)
+            ns_id = ns_data.get("id")
+            if ns_id is None:
+                try:
+                    ns_id = int(ns_key)
+                except (TypeError, ValueError):
+                    continue
+            ids.append(int(ns_id))
+
+        if not ids:
+            self.logger.warning("No content namespaces in siteinfo; defaulting to main namespace (0).")
+            return [0]
+        return sorted(ids)
+
     def _get_all_pages_generator(self) -> Iterator[Dict[str, Any]]:
         """Yield rich dictionaries for all pages using the generator API.
 
@@ -177,9 +218,15 @@ class MediaWikiReader(BasePydanticReader):
         This is much more efficient than fetching titles first and then
         querying metadata for each title.
         """
-        # If namespaces is None, query all. If it's a list, we must iterate
-        # because gapnamespace only supports a single value.
-        namespaces = self.namespaces if self.namespaces is not None else [None]
+        # If namespaces is None, use the wiki's content namespaces (siteinfo API).
+        # Otherwise use the explicit list. We iterate because gapnamespace accepts one value.
+        if self.namespaces is None:
+            namespaces = getattr(self, "_content_namespace_ids", None)
+            if namespaces is None:
+                namespaces = self._fetch_content_namespace_ids()
+                self._content_namespace_ids = namespaces  # type: ignore[attr-defined]
+        else:
+            namespaces = self.namespaces
 
         for ns in namespaces:
             continue_params: Dict[str, Any] = {}
@@ -194,8 +241,7 @@ class MediaWikiReader(BasePydanticReader):
                     "format": "json",
                     **continue_params,
                 }
-                if ns is not None:
-                    params["gapnamespace"] = ns
+                params["gapnamespace"] = ns
 
                 data = self._make_api_request(params)
                 if not data:

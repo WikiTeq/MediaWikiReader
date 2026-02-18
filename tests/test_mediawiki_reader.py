@@ -163,8 +163,8 @@ class TestMakeApiRequest:
 class TestGetAllPages:
     """Page listing and pagination."""
 
-    def test_generator_rich_response(self, reader, mock_session):
-        # Mock generator response format (query.pages)
+    def test_generator_rich_response(self, mock_session):
+        reader = _make_reader(namespaces=[0])  # explicit so we don't call siteinfo
         mock_session.get.return_value = _mock_response(json_data={
             "query": {"pages": {
                 "1": {
@@ -182,7 +182,8 @@ class TestGetAllPages:
         assert pages[0]["last_modified"].year == 2024
 
     @patch("llama_index.readers.mediawiki.base.time.sleep")
-    def test_pagination(self, mock_sleep, reader, mock_session):
+    def test_pagination(self, mock_sleep, mock_session):
+        reader = _make_reader(namespaces=[0])  # explicit so we don't call siteinfo
         first = _mock_response(json_data={
             "query": {"pages": {"1": {"title": "Page 1"}}},
             "continue": {"gapcontinue": "Page_2", "continue": "gapcontinue||"},
@@ -213,8 +214,57 @@ class TestGetAllPages:
         assert mock_session.get.call_args_list[0][1]["params"]["gapnamespace"] == 0
         assert mock_session.get.call_args_list[1][1]["params"]["gapnamespace"] == 1
 
+    def test_content_namespaces_default(self, mock_session):
+        """When namespaces is None, reader fetches content namespaces via siteinfo and uses them."""
+        siteinfo_resp = _mock_response(json_data={
+            "query": {
+                "namespaces": {
+                    "0": {"id": 0, "*": "", "content": True},
+                    "1": {"id": 1, "*": "Talk", "content": False},
+                    "4": {"id": 4, "*": "Project", "content": True},
+                }
+            }
+        })
+        allpages_ns0 = _mock_response(json_data={
+            "query": {"pages": {"1": {"title": "Page1", "canonicalurl": "https://example.com/Page1", "revisions": [{"timestamp": "2024-01-01T00:00:00Z"}]}}}
+        })
+        allpages_ns4 = _mock_response(json_data={
+            "query": {"pages": {"2": {"title": "Project:About", "canonicalurl": "https://example.com/Project:About", "revisions": [{"timestamp": "2024-01-02T00:00:00Z"}]}}}
+        })
+        mock_session.get.side_effect = [siteinfo_resp, allpages_ns0, allpages_ns4]
 
-class TestGetPageContents:
+        reader = _make_reader(namespaces=None)
+        pages = list(reader._get_all_pages_generator())
+
+        assert mock_session.get.call_count == 3
+        first_params = mock_session.get.call_args_list[0][1]["params"]
+        assert first_params["action"] == "query"
+        assert first_params["meta"] == "siteinfo"
+        assert first_params["siprop"] == "namespaces"
+        assert mock_session.get.call_args_list[1][1]["params"]["gapnamespace"] == 0
+        assert mock_session.get.call_args_list[2][1]["params"]["gapnamespace"] == 4
+        assert len(pages) == 2
+        assert pages[0]["title"] == "Page1"
+        assert pages[1]["title"] == "Project:About"
+
+    def test_fetch_content_namespace_ids(self, mock_session):
+        """_fetch_content_namespace_ids returns IDs where content is true; fallback to [0] on failure."""
+        reader = _make_reader()
+
+        mock_session.get.return_value = _mock_response(json_data={
+            "query": {
+                "namespaces": {
+                    "0": {"id": 0, "*": "", "content": True},
+                    "4": {"id": 4, "*": "Project", "content": True},
+                }
+            }
+        })
+        ids = reader._fetch_content_namespace_ids()
+        assert ids == [0, 4]
+
+        mock_session.get.return_value = _mock_response(json_data={})
+        ids_empty = reader._fetch_content_namespace_ids()
+        assert ids_empty == [0]
     """Content retrieval via parse action."""
 
     def test_success(self, reader, mock_session):
