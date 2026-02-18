@@ -171,6 +171,31 @@ class MediaWikiReader(BasePydanticReader):
             return [0]
         return sorted(ids)
 
+    def _build_page_url(
+        self, title: str, url_base: Optional[Tuple[str, str]]
+    ) -> Optional[str]:
+        """Build canonical page URL from pre-parsed (origin, article_path)."""
+        if not url_base:
+            return None
+        origin, article_path = url_base
+        return origin + article_path.replace("$1", title.replace(" ", "_"))
+
+    def _extract_revision_time(self, page: Any, title: str) -> Optional[datetime]:
+        """Extract last_modified from page revision timestamp (struct_time)."""
+        try:
+            ts = page.last_rev_time
+            if ts:
+                return datetime(*ts[:6], tzinfo=timezone.utc)
+            return None
+        except Exception as e:
+            self.logger.debug(
+                "Revision timestamp extraction failed for page %r: %s",
+                title,
+                e,
+                exc_info=True,
+            )
+            return None
+
     def _get_all_pages_generator(self) -> Iterator[Dict[str, Any]]:
         """Yield rich dicts for all pages via mwclient's allpages.
 
@@ -210,31 +235,8 @@ class MediaWikiReader(BasePydanticReader):
                 api_chunk_size=self.page_limit,
             ):
                 title = page.name
-
-                # Build canonical URL from pre-parsed site origin + path
-                url: Optional[str] = None
-                if url_base:
-                    origin, article_path = url_base
-                    url = origin + article_path.replace(
-                        "$1", title.replace(" ", "_")
-                    )
-
-                # Extract last_modified from page revision timestamp
-                last_modified: Optional[datetime] = None
-                try:
-                    ts = page.last_rev_time
-                    if ts:
-                        last_modified = datetime(
-                            *ts[:6], tzinfo=timezone.utc
-                        )
-                except Exception as e:
-                    self.logger.debug(
-                        "Revision timestamp extraction failed for page %r: %s",
-                        title,
-                        e,
-                        exc_info=True,
-                    )
-
+                url = self._build_page_url(title, url_base)
+                last_modified = self._extract_revision_time(page, title)
                 yield {
 
                     "title": title,
