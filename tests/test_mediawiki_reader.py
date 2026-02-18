@@ -90,7 +90,6 @@ class TestMediaWikiReaderInit:
         assert reader.max_retries == 3
         assert reader.timeout == 30
         assert reader.namespaces is None
-        assert reader.is_remote is True
 
 
 class TestMakeApiRequest:

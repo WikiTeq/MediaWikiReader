@@ -64,7 +64,6 @@ class MediaWikiReader(BasePydanticReader):
         default=None,
         description="List of namespace IDs to include (None = all namespaces)",
     )
-    is_remote: bool = Field(default=True, description="Data is loaded from a remote API")
 
     # -- Non-serialised internal state ----------------------------------------
     _session: Optional[requests.Session] = None
