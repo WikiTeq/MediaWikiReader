@@ -357,33 +357,34 @@ class TestResourcesInterface:
         args, kwargs = mock_session.get.call_args
         assert kwargs["params"]["action"] == "parse"
 
-    def test_load_resource_fallback(self, reader, mock_session):
-        info_resp = _mock_response(json_data={
-            "query": {"pages": {"123": {
-                "pageid": 123, "title": "Page",
-                "canonicalurl": "https://example.com/wiki/Page",
-                "revisions": [{"timestamp": "2024-01-01T12:00:00Z"}]
-            }}}
-        })
+    def test_load_resource_with_required_url_and_timestamp(self, reader, mock_session):
+        """load_resource requires resource_url and last_modified; only calls parse."""
         parse_resp = _mock_response(json_data={
             "parse": {"text": {"*": "Content"}}
         })
+        mock_session.get.return_value = parse_resp
 
-        mock_session.get.side_effect = [info_resp, parse_resp]
-
-        docs = reader.load_resource("Page")
+        timestamp = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        docs = reader.load_resource(
+            "Page",
+            resource_url="https://example.com/wiki/Page",
+            last_modified=timestamp,
+        )
         assert len(docs) == 1
         assert "Content" in docs[0].text
         assert docs[0].metadata["url"] == "https://example.com/wiki/Page"
         assert docs[0].metadata["title"] == "Page"
-        assert mock_session.get.call_count == 2
+        mock_session.get.assert_called_once()
+        assert mock_session.get.call_args[1]["params"]["action"] == "parse"
 
     def test_load_resource_missing_page(self, reader, mock_session):
-        mock_session.get.return_value = _mock_response(json_data={
-            "query": {"pages": {"-1": {"title": "Missing", "missing": True}}}
-        })
-
-        docs = reader.load_resource("Missing")
+        """When parse returns no content, load_resource returns []."""
+        mock_session.get.return_value = _mock_response(json_data={})
+        docs = reader.load_resource(
+            "Missing",
+            resource_url="https://example.com/wiki/Missing",
+            last_modified=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        )
         assert docs == []
 
     def test_get_resource_info(self, reader, mock_session):

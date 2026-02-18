@@ -343,43 +343,27 @@ class MediaWikiReader(BasePydanticReader):
     def load_resource(
         self,
         resource_id: str,
-        resource_url: Optional[str] = None,
-        last_modified: Optional[datetime] = None,
+        resource_url: str,
+        last_modified: Optional[datetime],
     ) -> List[Document]:
         """Load a single page as a list containing one Document.
 
-        Consolidated to minimize API calls. If resource_url and last_modified are
-        provided, we only perform the 'parse' API call.
+        Caller must supply resource_url and last_modified (e.g. from
+        get_resources_info or from the allpages generator). Only the 'parse'
+        API call is made.
 
         Args:
             resource_id: The page title (MediaWiki parse API is title-based;
                 page_id could be used in a future version for stability).
-            resource_url: Optional pre-fetched canonical URL.
-            last_modified: Optional pre-fetched last-modified timestamp.
+            resource_url: Pre-fetched canonical URL for the page.
+            last_modified: Pre-fetched last-modified timestamp (or None).
 
         Returns:
             A one-element list with the page Document, or an empty list on failure.
         """
-        if resource_url and last_modified:
-            # We already have metadata, just need the content
-            content = self._get_page_contents(resource_id)
-            if not content:
-                return []
-        else:
-            # Fallback: Fetch missing metadata first
-            info_map = self.get_resources_info([resource_id])
-            info = info_map.get(resource_id)
-
-            if not info or not info.get("url"):
-                self.logger.warning("Metadata not found for fallback page '%s'", resource_id)
-                return []
-
-            resource_url = info["url"]
-            last_modified = info["last_modified"]
-
-            content = self._get_page_contents(resource_id)
-            if not content:
-                return []
+        content = self._get_page_contents(resource_id)
+        if not content:
+            return []
 
         # Build Document (convert raw HTML to clean text)
         content = self._html_to_clean_text(content)
@@ -470,9 +454,16 @@ class MediaWikiReader(BasePydanticReader):
         as the 'text' property is too large for the query generator.
         """
         for page_record in self._get_all_pages_generator():
+            url = page_record.get("url")
+            if not url:
+                self.logger.warning(
+                    "Skipping page '%s': no URL in record",
+                    page_record.get("title", "?"),
+                )
+                continue
             docs = self.load_resource(
                 page_record["title"],
-                resource_url=page_record.get("url"),
+                resource_url=url,
                 last_modified=page_record.get("last_modified"),
             )
             yield from docs
