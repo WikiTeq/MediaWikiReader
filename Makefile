@@ -10,5 +10,5 @@ format: ## Run code autoformatters (black).
 lint: ## Run linters: pre-commit (black, ruff, codespell) and mypy
 	pre-commit install && git ls-files | xargs pre-commit run --show-diff-on-failure --files
 
-test: ## Run tests via pytest.
-	pytest tests
+test: ## Run tests via pytest (uses active Python; no uv required).
+	python -m pytest tests
