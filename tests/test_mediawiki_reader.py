@@ -349,6 +349,13 @@ class TestHtmlToCleanText:
         assert "Item 1" in result
         assert "Item 2" in result
 
+    @patch("llama_index.readers.mediawiki.base.html2text.HTML2Text")
+    def test_fallback_when_html2text_raises(self, mock_html2text_cls):
+        """When html2text raises, fallback strips tags with regex and normalizes space."""
+        mock_html2text_cls.return_value.handle.side_effect = RuntimeError("html2text fail")
+        result = MediaWikiReader._html_to_clean_text("<p>Hello</p> <b>world</b>")
+        assert result == "Hello world"
+
 
 # ---------------------------------------------------------------------------
 # Resource interface
@@ -416,6 +423,46 @@ class TestResourcesInterface:
         assert info["last_modified"].year == 2024
         mock_site.get.assert_called_once()
 
+    @patch("llama_index.readers.mediawiki.base.mwclient.Site")
+    def test_get_resource_info_missing_page(self, mock_site_cls):
+        """When the page does not exist, API returns 'missing'; url and last_modified are None."""
+        mock_site = _mock_site()
+        mock_site.get.return_value = {
+            "query": {
+                "pages": {
+                    "-1": {
+                        "ns": 0,
+                        "title": "NonExistent",
+                        "missing": "",
+                    }
+                }
+            }
+        }
+        mock_site_cls.return_value = mock_site
+
+        reader = _make_reader()
+        info = reader.get_resource_info("NonExistent")
+
+        assert info["url"] is None
+        assert info["last_modified"] is None
+
+    @patch("llama_index.readers.mediawiki.base.mwclient.Site")
+    def test_get_resource_info_api_error(self, mock_site_cls):
+        """When site.get raises APIError, return url and last_modified as None."""
+        import mwclient.errors
+
+        mock_site = _mock_site()
+        mock_site.get.side_effect = mwclient.errors.APIError(
+            "query-error", "code", {}
+        )
+        mock_site_cls.return_value = mock_site
+
+        reader = _make_reader()
+        info = reader.get_resource_info("Any")
+
+        assert info["url"] is None
+        assert info["last_modified"] is None
+
 
 # ---------------------------------------------------------------------------
 # lazy_load_data
@@ -449,3 +496,26 @@ class TestLazyLoadData:
         assert "Hello world" in docs[0].text
         assert docs[0].metadata["title"] == "Test Page"
         assert "example.com" in docs[0].metadata["url"]
+
+    @patch("llama_index.readers.mediawiki.base.mwclient.Site")
+    def test_uses_fallback_url_when_siteinfo_has_no_base(self, mock_site_cls):
+        """When siteinfo has no base URL, lazy_load_data uses scheme/host/path fallback."""
+        mock_site = _mock_site()
+        mock_site.site = {}  # no "base" -> url_base is None in generator
+        page = MagicMock()
+        page.name = "NoURL Page"
+        page.revision = True
+        page.last_rev_time = (2024, 1, 1, 12, 0, 0, 0, 0, 0)
+        mock_site.allpages.return_value = [page]
+        mock_site.parse.return_value = {"text": {"*": "<p>Content</p>"}}
+        mock_site_cls.return_value = mock_site
+
+        reader = _make_reader(host="wiki.example.com", namespaces=[0])
+        docs = list(reader.lazy_load_data())
+
+        assert len(docs) == 1
+        assert docs[0].metadata["title"] == "NoURL Page"
+        # Fallback URL from reader config
+        assert docs[0].metadata["url"] == (
+            "https://wiki.example.com/w/index.php?title=NoURL_Page"
+        )
