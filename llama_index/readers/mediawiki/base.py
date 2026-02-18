@@ -395,8 +395,6 @@ class MediaWikiReader(BasePydanticReader):
                 "url": resource_url,
                 "last_modified": last_modified.isoformat() if last_modified else None,
             },
-            excluded_llm_metadata_keys=["url", "last_modified"],
-            excluded_embed_metadata_keys=["url", "last_modified"],
         )
         return [doc]
 
