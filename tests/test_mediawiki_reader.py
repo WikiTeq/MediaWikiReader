@@ -294,6 +294,7 @@ class TestGetPageContents:
     """Content retrieval via parse action."""
 
     def test_success(self, reader, mock_session):
+        """_get_page_contents returns raw HTML; caller converts via _html_to_clean_text."""
         parse_resp = _mock_response(json_data={
             "parse": {"text": {"*": "<p>Test page content with <a href='/wiki/Links'>links</a>.</p>"}}
         })
@@ -302,6 +303,7 @@ class TestGetPageContents:
         result = reader._get_page_contents("Test Page")
         assert result is not None
         assert "Test page content" in result
+        assert "<p>" in result  # raw HTML, not converted to text yet
         assert mock_session.get.call_count == 1
 
     def test_no_parse_result(self, reader, mock_session):

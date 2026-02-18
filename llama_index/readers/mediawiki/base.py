@@ -285,10 +285,12 @@ class MediaWikiReader(BasePydanticReader):
 
 
     def _get_page_contents(self, page_title: str) -> Optional[str]:
-        """Fetch parsed content for a page.
+        """Fetch parsed HTML content for a page.
 
         Returns:
-            Clean text content or ``None``.
+            Raw HTML from the parse API, or ``None`` if the request or parse
+            result is missing. Callers should pass the result to
+            ``_html_to_clean_text`` for plain text.
         """
         params = {
             "action": "parse",
@@ -314,7 +316,7 @@ class MediaWikiReader(BasePydanticReader):
             self.logger.warning("No content in parse result for page '%s'", page_title)
             return None
 
-        return self._html_to_clean_text(html_content)
+        return html_content
 
     def _html_to_clean_text(self, html_content: str) -> str:
         """Convert MediaWiki HTML to clean Markdown text."""
@@ -387,7 +389,8 @@ class MediaWikiReader(BasePydanticReader):
             if not content:
                 return []
 
-        # Build Document
+        # Build Document (convert raw HTML to clean text)
+        content = self._html_to_clean_text(content)
         doc = Document(
             text=content,
             id_=f"mediawiki:{resource_id}",
