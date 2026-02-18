@@ -137,17 +137,6 @@ class MediaWikiReader(BasePydanticReader):
                 response = self.session.get(
                     self.api_url, params=params, timeout=self.timeout
                 )
-
-                if response.status_code == 429:
-                    if attempt < max_attempts - 1:
-                        retry_after = int(response.headers.get("Retry-After", 5))
-                        self.logger.warning("Rate limited. Waiting %d seconds...", retry_after)
-                        time.sleep(retry_after)
-                        continue
-                    else:
-                        self.logger.error("Rate limited and no more retries left.")
-                        return None
-
                 response.raise_for_status()
                 return response.json()
 
@@ -159,7 +148,15 @@ class MediaWikiReader(BasePydanticReader):
                         max_attempts,
                         exc,
                     )
-                    time.sleep(2**attempt)
+                    if (
+                        isinstance(exc, requests.exceptions.HTTPError)
+                        and exc.response is not None
+                        and exc.response.status_code == 429
+                    ):
+                        retry_after = int(exc.response.headers.get("Retry-After", 5))
+                        time.sleep(retry_after)
+                    else:
+                        time.sleep(2**attempt)
                     continue
                 else:
                     self.logger.error("API request failed after %d attempts: %s", max_attempts, exc)
