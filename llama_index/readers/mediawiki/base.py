@@ -48,11 +48,11 @@ class MediaWikiReader(BasePydanticReader):
     )
     page_limit: int = Field(
         default=500,
-        description="Maximum number of pages per allpages API call",
+        description="When listing pages (allpages generator): max page titles per API call. Each request returns up to this many; pagination continues until the wiki is fully listed.",
     )
     batch_size: int = Field(
         default=50,
-        description="Number of pages to batch for timestamp fetching",
+        description="When fetching metadata (URL, last_modified) for multiple pages: number of titles per API call. Used by get_resources_info and by load_resource when prefetched metadata is missing.",
     )
     max_retries: int = Field(
         default=3,

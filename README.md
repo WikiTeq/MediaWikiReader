@@ -60,8 +60,8 @@ reader = MediaWikiReader(
 | `api_url`      | `str`    | required | MediaWiki API endpoint (e.g. `https://en.wikipedia.org/w/api.php`). |
 | `user_agent`   | `str`    | `"llama-index-readers-mediawiki/1.0"` | User-Agent header for API requests. |
 | `request_delay`| `float`  | `0.1`   | Delay in seconds between API requests (rate limiting). |
-| `page_limit`   | `int`    | `500`   | Max pages per allpages API call. |
-| `batch_size`   | `int`    | `50`    | Pages per batch when fetching metadata. |
+| `page_limit`   | `int`    | `500`   | When listing pages: max titles per API call (allpages pagination). |
+| `batch_size`   | `int`    | `50`    | When fetching metadata for multiple pages: titles per API call (get_resources_info, load_resource fallback). |
 | `max_retries`  | `int`    | `3`     | Retry attempts for failed requests. |
 | `timeout`      | `int`    | `30`    | HTTP request timeout in seconds. |
 | `namespaces`   | `list[int] \| None` | `None` | Namespace IDs to include; `None` = all. |
