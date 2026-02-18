@@ -245,6 +245,10 @@ class MediaWikiReader(BasePydanticReader):
 
                 data = self._make_api_request(params)
                 if not data:
+                    self.logger.warning(
+                        "Allpages API request returned no data for namespace %s; stopping iteration.",
+                        ns,
+                    )
                     break
 
                 pages_dict = data.get("query", {}).get("pages", {})
