@@ -8,7 +8,7 @@ MediaWiki API interactions.
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Literal, Optional
 from urllib.parse import urlparse
 
 import html2text
@@ -57,7 +57,7 @@ class MediaWikiReader(BasePydanticReader):
         default="/w/",
         description="MediaWiki script path (default '/w/')",
     )
-    scheme: str = Field(
+    scheme: Literal["https", "http"] = Field(
         default="https",
         description="URL scheme: 'https' or 'http'",
     )
