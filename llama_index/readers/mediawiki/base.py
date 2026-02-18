@@ -351,7 +351,6 @@ class MediaWikiReader(BasePydanticReader):
         resource_id: str,
         resource_url: Optional[str] = None,
         last_modified: Optional[datetime] = None,
-        **kwargs: Any,
     ) -> List[Document]:
         """Load a single page as a list containing one Document.
 
