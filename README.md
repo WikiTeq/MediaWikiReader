@@ -65,6 +65,7 @@ reader = MediaWikiReader(
 | `max_retries`  | `int`    | `3`     | Retry attempts for failed requests. |
 | `timeout`      | `int`    | `30`    | HTTP request timeout in seconds. |
 | `namespaces`   | `list[int] \| None` | `None` | Namespace IDs to include; `None` = all. |
+| `logger`       | `logging.Logger` | module logger | Logger instance (injectable for tests or custom logging). Not serialized. |
 
 ### License
 

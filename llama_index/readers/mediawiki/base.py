@@ -17,7 +17,7 @@ from llama_index.core.bridge.pydantic import Field
 from llama_index.core.readers.base import BasePydanticReader
 from llama_index.core.schema import Document
 
-logger = logging.getLogger(__name__)
+_internal_logger = logging.getLogger(__name__)
 
 
 class MediaWikiReader(BasePydanticReader):
@@ -32,6 +32,8 @@ class MediaWikiReader(BasePydanticReader):
     Additionally exposes get_resources_info for efficient batched timestamp/URL
     retrieval (used by downstream jobs to avoid N+1 API calls).
     """
+
+    model_config = {"arbitrary_types_allowed": True}
 
     # -- Pydantic fields (serialisable config) --------------------------------
 
@@ -64,6 +66,11 @@ class MediaWikiReader(BasePydanticReader):
         default=None,
         description="List of namespace IDs to include (None = all namespaces)",
     )
+    logger: logging.Logger = Field(
+        default_factory=lambda: _internal_logger,
+        description="Logger instance (injectable for tests or custom logging)",
+        exclude=True,
+    )
 
     # -- Non-serialised internal state ----------------------------------------
     _session: Optional[requests.Session] = None
@@ -73,7 +80,7 @@ class MediaWikiReader(BasePydanticReader):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._validate_config()
-        logger.info("Initialized MediaWikiReader for %s", self.api_url)
+        self.logger.info("Initialized MediaWikiReader for %s", self.api_url)
 
     def _validate_config(self) -> None:
         """Validate numeric config bounds — mirrors the original job checks."""
@@ -133,11 +140,11 @@ class MediaWikiReader(BasePydanticReader):
                 if response.status_code == 429:
                     if attempt < max_attempts - 1:
                         retry_after = int(response.headers.get("Retry-After", 5))
-                        logger.warning("Rate limited. Waiting %d seconds...", retry_after)
+                        self.logger.warning("Rate limited. Waiting %d seconds...", retry_after)
                         time.sleep(retry_after)
                         continue
                     else:
-                        logger.error("Rate limited and no more retries left.")
+                        self.logger.error("Rate limited and no more retries left.")
                         return None
 
                 response.raise_for_status()
@@ -145,7 +152,7 @@ class MediaWikiReader(BasePydanticReader):
 
             except (requests.exceptions.RequestException, ValueError) as exc:
                 if attempt < max_attempts - 1:
-                    logger.warning(
+                    self.logger.warning(
                         "API request failed (attempt %d/%d): %s",
                         attempt + 1,
                         max_attempts,
@@ -154,7 +161,7 @@ class MediaWikiReader(BasePydanticReader):
                     time.sleep(2**attempt)
                     continue
                 else:
-                    logger.error("API request failed after %d attempts: %s", max_attempts, exc)
+                    self.logger.error("API request failed after %d attempts: %s", max_attempts, exc)
                     return None
 
         return None
@@ -252,12 +259,12 @@ class MediaWikiReader(BasePydanticReader):
 
         parse_result = parsed_data.get("parse", {})
         if not parse_result:
-            logger.warning("No parse result for page '%s'", page_title)
+            self.logger.warning("No parse result for page '%s'", page_title)
             return None
 
         html_content = parse_result.get("text", {}).get("*", "")
         if not html_content:
-            logger.warning("No content in parse result for page '%s'", page_title)
+            self.logger.warning("No content in parse result for page '%s'", page_title)
             return None
 
         return self._html_to_clean_text(html_content)
@@ -274,7 +281,7 @@ class MediaWikiReader(BasePydanticReader):
             h.strong_mark = "**"
             return h.handle(html_content).strip()
         except Exception as exc:
-            logger.error("html2text conversion failed: %s", exc)
+            self.logger.error("html2text conversion failed: %s", exc)
             clean_text = re.sub(r"<[^>]+>", "", html_content)
             clean_text = re.sub(r"\s+", " ", clean_text).strip()
             return clean_text
@@ -323,7 +330,7 @@ class MediaWikiReader(BasePydanticReader):
             info = info_map.get(resource_id)
 
             if not info or not info.get("url"):
-                logger.warning("Metadata not found for fallback page '%s'", resource_id)
+                self.logger.warning("Metadata not found for fallback page '%s'", resource_id)
                 return []
 
             resource_url = info["url"]

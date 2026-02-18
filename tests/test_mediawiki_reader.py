@@ -1,5 +1,7 @@
 """Tests for MediaWikiReader (Pytest version)."""
 
+import logging
+
 import pytest
 from datetime import datetime, timezone
 from unittest.mock import Mock, patch
@@ -90,6 +92,12 @@ class TestMediaWikiReaderInit:
         assert reader.max_retries == 3
         assert reader.timeout == 30
         assert reader.namespaces is None
+
+    def test_logger_injection(self, mock_session_cls):
+        """Caller can inject a custom logger (e.g. for tests or logging config)."""
+        custom = logging.getLogger("custom.mediawiki")
+        reader = _make_reader(logger=custom)
+        assert reader.logger is custom
 
 
 class TestMakeApiRequest:
