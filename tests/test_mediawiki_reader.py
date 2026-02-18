@@ -243,14 +243,6 @@ class TestHtmlToCleanText:
 class TestResourcesInterface:
     """Public resource-based API."""
 
-    def test_list_resources(self, reader, mock_session):
-        mock_session.get.return_value = _mock_response(json_data={
-            "query": {"pages": {"1": {"title": "A"}, "2": {"title": "B"}}}
-        })
-
-        titles = reader.list_resources()
-        assert titles == ["A", "B"]
-
     def test_load_resource_with_prefetched_metadata(self, reader, mock_session):
         """load_resource should bypass metadata calls if url/timestamp are provided."""
         parse_resp = _mock_response(json_data={

@@ -7,7 +7,7 @@ The MediaWiki Reader loads pages from any [MediaWiki](https://www.mediawiki.org/
 ### Features
 
 - **Any MediaWiki instance** — Use `api_url` to point at any wiki (e.g. `https://en.wikipedia.org/w/api.php`).
-- **Resource-based API** — Implements `list_resources`, `load_resource`, and `get_resource_info` for use with LlamaIndex ingestion and RAG pipelines.
+- **Resource-based API** — Implements `load_resource` and `get_resource_info` for use with LlamaIndex ingestion and RAG pipelines.
 - **Efficient listing** — Batched API calls for page metadata; optional `namespaces` filter.
 - **HTML to text** — Converts wiki HTML to clean text via html2text (configurable).
 
@@ -32,15 +32,6 @@ reader = MediaWikiReader(
 # Load one page
 docs = reader.load_resource("Python (programming language)")
 # docs is a list of one Document with .text and .metadata (title, url, last_modified)
-```
-
-**List all page titles, then load a subset:**
-
-```python
-titles = reader.list_resources()
-docs = []
-for title in titles[:10]:
-    docs.extend(reader.load_resource(title))
 ```
 
 **Stream all pages (lazy):**

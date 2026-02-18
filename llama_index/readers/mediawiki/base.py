@@ -14,26 +14,23 @@ import html2text
 import requests
 
 from llama_index.core.bridge.pydantic import Field
-from llama_index.core.readers.base import BasePydanticReader, ResourcesReaderMixin
+from llama_index.core.readers.base import BasePydanticReader
 from llama_index.core.schema import Document
 
 logger = logging.getLogger(__name__)
 
 
-class MediaWikiReader(BasePydanticReader, ResourcesReaderMixin):
+class MediaWikiReader(BasePydanticReader):
     """LlamaIndex reader for MediaWiki instances.
 
     Fetches pages from a MediaWiki API endpoint, converts HTML content to clean
     text, and returns LlamaIndex Documents with metadata (title, URL,
     last_modified).
 
-    Implements both BasePydanticReader (for serialization / LlamaHub
-    compatibility) and ResourcesReaderMixin (for the standard resource-based
-    interface: list_resources, get_resource_info, load_resource).
-
-    Additionally exposes a custom ``get_resources_info`` method for efficient
-    batched timestamp/URL retrieval — this is *not* part of the LlamaIndex API
-    but is used by downstream jobs to avoid N+1 API calls.
+    Implements BasePydanticReader (for serialization / LlamaHub compatibility)
+    and provides get_resource_info and load_resource for resource-based use.
+    Additionally exposes get_resources_info for efficient batched timestamp/URL
+    retrieval (used by downstream jobs to avoid N+1 API calls).
     """
 
     # -- Pydantic fields (serialisable config) --------------------------------
@@ -283,20 +280,12 @@ class MediaWikiReader(BasePydanticReader, ResourcesReaderMixin):
             clean_text = re.sub(r"\s+", " ", clean_text).strip()
             return clean_text
 
-    # -- ResourcesReaderMixin implementation ----------------------------------
-
-    def list_resources(self, *args: Any, **kwargs: Any) -> List[str]:
-        """Return a list of all page titles in the wiki."""
-        return [
-            page["title"]
-            for page in self._get_all_pages_generator()
-            if "title" in page
-        ]
+    # -- Resource API (get_resource_info, load_resource) ----------------------
 
     def get_resource_info(
         self, resource_id: str, *args: Any, **kwargs: Any
     ) -> Dict:
-        """Return info for a single page (required by ResourcesReaderMixin).
+        """Return info for a single page.
 
         Returns:
             ``{"last_modified": datetime | None, "url": str | None}``
@@ -366,10 +355,8 @@ class MediaWikiReader(BasePydanticReader, ResourcesReaderMixin):
     ) -> Dict[str, Dict[str, Any]]:
         """Return info for multiple pages in batched API calls.
 
-        This is a **custom extension** — not part of the standard
-        ``ResourcesReaderMixin`` interface.  It exists so that downstream jobs
-        can retrieve ``last_modified`` and ``url`` for many pages without N+1
-        API round-trips.
+        Custom extension so that downstream jobs can retrieve ``last_modified``
+        and ``url`` for many pages without N+1 API round-trips.
 
         Args:
             page_titles: List of page titles.
