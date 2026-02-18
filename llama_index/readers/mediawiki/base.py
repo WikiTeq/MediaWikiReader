@@ -37,29 +37,37 @@ class MediaWikiReader(BasePydanticReader):
 
     # -- Pydantic fields (serialisable config) --------------------------------
 
-    api_url: str = Field(description="MediaWiki API endpoint URL")
+    api_url: str = Field(
+        min_length=1,
+        description="MediaWiki API endpoint URL",
+    )
     user_agent: str = Field(
         default="llama-index-readers-mediawiki/1.0",
         description="User-Agent header for HTTP requests",
     )
     request_delay: float = Field(
         default=0.1,
+        ge=0,
         description="Delay in seconds between API requests (rate limiting)",
     )
     page_limit: int = Field(
         default=500,
+        gt=0,
         description="When listing pages (allpages generator): max page titles per API call. Each request returns up to this many; pagination continues until the wiki is fully listed.",
     )
     batch_size: int = Field(
         default=50,
+        gt=0,
         description="When fetching metadata (URL, last_modified) for multiple pages: number of titles per API call. Used by get_resources_info and by load_resource when prefetched metadata is missing.",
     )
     max_retries: int = Field(
         default=3,
+        ge=0,
         description="Maximum number of retry attempts for API requests",
     )
     timeout: int = Field(
         default=30,
+        gt=0,
         description="HTTP request timeout in seconds",
     )
     namespaces: Optional[List[int]] = Field(
@@ -80,23 +88,7 @@ class MediaWikiReader(BasePydanticReader):
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        self._validate_config()
         self.logger.info("Initialized MediaWikiReader for %s", self.api_url)
-
-    def _validate_config(self) -> None:
-        """Validate numeric config bounds — mirrors the original job checks."""
-        if not self.api_url:
-            raise ValueError("api_url is required")
-        if self.request_delay < 0:
-            raise ValueError("request_delay must be non-negative")
-        if self.page_limit <= 0:
-            raise ValueError("page_limit must be positive")
-        if self.batch_size <= 0:
-            raise ValueError("batch_size must be positive")
-        if self.max_retries < 0:
-            raise ValueError("max_retries must be non-negative")
-        if self.timeout <= 0:
-            raise ValueError("timeout must be positive")
 
     # -- Session lifecycle ----------------------------------------------------
 

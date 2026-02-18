@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
 import requests
+from pydantic import ValidationError
 
 from llama_index.readers.mediawiki import MediaWikiReader
 
@@ -61,27 +62,27 @@ class TestMediaWikiReaderInit:
     """Construction and config validation."""
 
     def test_missing_api_url_raises(self, mock_session_cls):
-        with pytest.raises(ValueError, match="api_url is required"):
+        with pytest.raises(ValidationError, match="api_url"):
             MediaWikiReader(api_url="")
 
     def test_negative_request_delay_raises(self, mock_session_cls):
-        with pytest.raises(ValueError, match="request_delay must be non-negative"):
+        with pytest.raises(ValidationError, match="request_delay"):
             _make_reader(request_delay=-1)
 
     def test_zero_page_limit_raises(self, mock_session_cls):
-        with pytest.raises(ValueError, match="page_limit must be positive"):
+        with pytest.raises(ValidationError, match="page_limit"):
             _make_reader(page_limit=0)
 
     def test_negative_batch_size_raises(self, mock_session_cls):
-        with pytest.raises(ValueError, match="batch_size must be positive"):
+        with pytest.raises(ValidationError, match="batch_size"):
             _make_reader(batch_size=-1)
 
     def test_negative_max_retries_raises(self, mock_session_cls):
-        with pytest.raises(ValueError, match="max_retries must be non-negative"):
+        with pytest.raises(ValidationError, match="max_retries"):
             _make_reader(max_retries=-1)
 
     def test_zero_timeout_raises(self, mock_session_cls):
-        with pytest.raises(ValueError, match="timeout must be positive"):
+        with pytest.raises(ValidationError, match="timeout"):
             _make_reader(timeout=0)
 
     def test_logger_injection(self, mock_session_cls):
