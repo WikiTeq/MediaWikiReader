@@ -55,6 +55,11 @@ class TestMediaWikiReaderInit:
             _make_reader(page_limit=0)
 
     @patch("llama_index.readers.mediawiki.base.mwclient.Site")
+    def test_negative_page_limit_raises(self, _mock_site_cls):
+        with pytest.raises(ValidationError, match="page_limit"):
+            _make_reader(page_limit=-1)
+
+    @patch("llama_index.readers.mediawiki.base.mwclient.Site")
     def test_defaults(self, _mock_site_cls):
         reader = _make_reader()
         assert reader.host == "example.com"
@@ -129,6 +134,19 @@ class TestLogin:
         reader = _make_reader()
         with pytest.raises(mwclient.errors.LoginError):
             reader.login("bad", "creds")
+
+    @patch("llama_index.readers.mediawiki.base.mwclient.Site")
+    def test_login_with_bot_password_format(self, mock_site_cls):
+        """Bot password uses User@BotName as username; passes through to mwclient."""
+        mock_site = _mock_site()
+        mock_site_cls.return_value = mock_site
+
+        reader = _make_reader()
+        reader.login("User@BotName", "bot-password-token")
+
+        mock_site.clientlogin.assert_called_once_with(
+            username="User@BotName", password="bot-password-token"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -279,6 +297,22 @@ class TestGetAllPages:
 
 
 # ---------------------------------------------------------------------------
+# URL building
+# ---------------------------------------------------------------------------
+
+class TestBuildPageUrl:
+    """_build_page_url builds canonical URLs from title and site base."""
+
+    @patch("llama_index.readers.mediawiki.base.mwclient.Site")
+    def test_special_characters_in_title(self, _mock_site_cls):
+        """Titles with & and spaces are normalized (spaces to underscores)."""
+        reader = _make_reader()
+        url_base = ("https://example.com", "/wiki/$1")
+        result = reader._build_page_url("Page & FAQ", url_base)
+        assert result == "https://example.com/wiki/Page_&_FAQ"
+
+
+# ---------------------------------------------------------------------------
 # Page content retrieval
 # ---------------------------------------------------------------------------
 
@@ -356,6 +390,13 @@ class TestHtmlToCleanText:
         result = MediaWikiReader._html_to_clean_text("<p>Hello</p> <b>world</b>")
         assert result == "Hello world"
 
+    def test_deeply_nested_malformed_html(self):
+        """Deeply nested or malformed HTML is handled by html2text or tag-strip fallback."""
+        html = "<div><div><p>Nested <span>text</span></p></div>"
+        result = MediaWikiReader._html_to_clean_text(html)
+        assert "Nested" in result
+        assert "text" in result
+
 
 # ---------------------------------------------------------------------------
 # Resource interface
@@ -397,6 +438,24 @@ class TestResourcesInterface:
         assert docs == []
 
     @patch("llama_index.readers.mediawiki.base.mwclient.Site")
+    def test_load_resource_last_modified_none(self, mock_site_cls):
+        """When last_modified is None, metadata["last_modified"] is None."""
+        mock_site = _mock_site()
+        mock_site.parse.return_value = {"text": {"*": "<p>Content</p>"}}
+        mock_site_cls.return_value = mock_site
+
+        reader = _make_reader()
+        docs = reader.load_resource(
+            "SomePage",
+            resource_url="https://example.com/wiki/SomePage",
+            last_modified=None,
+        )
+
+        assert len(docs) == 1
+        assert docs[0].metadata["last_modified"] is None
+        assert docs[0].metadata["url"] == "https://example.com/wiki/SomePage"
+
+    @patch("llama_index.readers.mediawiki.base.mwclient.Site")
     def test_get_resource_info(self, mock_site_cls):
         mock_site = _mock_site()
         mock_site.get.return_value = {
@@ -422,6 +481,30 @@ class TestResourcesInterface:
         assert info["last_modified"] is not None
         assert info["last_modified"].year == 2024
         mock_site.get.assert_called_once()
+
+    @patch("llama_index.readers.mediawiki.base.mwclient.Site")
+    def test_get_resource_info_empty_revisions(self, mock_site_cls):
+        """When page exists but revisions list is empty, last_modified is None."""
+        mock_site = _mock_site()
+        mock_site.get.return_value = {
+            "query": {
+                "pages": {
+                    "1": {
+                        "pageid": 1,
+                        "title": "Page",
+                        "canonicalurl": "https://example.com/wiki/Page",
+                        "revisions": [],
+                    }
+                }
+            }
+        }
+        mock_site_cls.return_value = mock_site
+
+        reader = _make_reader()
+        info = reader.get_resource_info("Page")
+
+        assert info["url"] == "https://example.com/wiki/Page"
+        assert info["last_modified"] is None
 
     @patch("llama_index.readers.mediawiki.base.mwclient.Site")
     def test_get_resource_info_missing_page(self, mock_site_cls):
@@ -519,3 +602,32 @@ class TestLazyLoadData:
         assert docs[0].metadata["url"] == (
             "https://wiki.example.com/w/index.php?title=NoURL_Page"
         )
+
+    @patch("llama_index.readers.mediawiki.base.mwclient.Site")
+    def test_skips_page_when_get_page_contents_returns_none(self, mock_site_cls):
+        """When _get_page_contents returns None for a page, no document is yielded for it."""
+        mock_site = _mock_site()
+
+        page_ok = MagicMock()
+        page_ok.name = "PageWithContent"
+        page_ok.revision = True
+        page_ok.last_rev_time = (2024, 1, 1, 12, 0, 0, 0, 0, 0)
+
+        page_skip = MagicMock()
+        page_skip.name = "PageWithoutContent"
+        page_skip.revision = True
+        page_skip.last_rev_time = (2024, 1, 2, 12, 0, 0, 0, 0, 0)
+
+        mock_site.allpages.return_value = [page_ok, page_skip]
+        mock_site.parse.side_effect = [
+            {"text": {"*": "<p>Only this page has content</p>"}},
+            {},  # second page: no content -> load_resource returns []
+        ]
+        mock_site_cls.return_value = mock_site
+
+        reader = _make_reader(namespaces=[0])
+        docs = list(reader.lazy_load_data())
+
+        assert len(docs) == 1
+        assert docs[0].metadata["title"] == "PageWithContent"
+        assert "Only this page has content" in docs[0].text
