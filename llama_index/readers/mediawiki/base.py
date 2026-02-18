@@ -374,11 +374,17 @@ class MediaWikiReader(BasePydanticReader):
         for page_record in self._get_all_pages_generator():
             url = page_record.get("url")
             if not url:
-                self.logger.warning(
-                    "Skipping page '%s': no URL in record",
-                    page_record.get("title", "?"),
+                # API-based URL construction failed; use guaranteed fallback
+                # so we never drop content due to missing siteinfo.
+                safe_title = page_record["title"].replace(" ", "_")
+                url = (
+                    f"{self.scheme}://{self.host}{self.path}"
+                    f"index.php?title={safe_title}"
                 )
-                continue
+                self.logger.debug(
+                    "Using fallback URL for %s",
+                    page_record["title"],
+                )
             docs = self.load_resource(
                 page_record["title"],
                 resource_url=url,
