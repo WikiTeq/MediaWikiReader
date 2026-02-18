@@ -8,7 +8,7 @@ MediaWiki API interactions.
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterator, List, Literal, Optional
+from typing import Any, Dict, Iterator, List, Literal, Optional, Tuple
 from urllib.parse import urlparse
 
 import html2text
@@ -186,6 +186,23 @@ class MediaWikiReader(BasePydanticReader):
         else:
             ns_list = self.namespaces
 
+        # Parse site base URL once; origin + article_path are constant per site
+        url_base: Optional[Tuple[str, str]] = None
+        try:
+            site_info = self.site.site
+            base_url = site_info.get("base", "")
+            article_path = site_info.get("articlepath", "/wiki/$1")
+            if base_url:
+                parsed = urlparse(base_url)
+                origin = f"{parsed.scheme}://{parsed.netloc}"
+                url_base = (origin, article_path)
+        except Exception as e:
+            self.logger.debug(
+                "URL base from siteinfo failed: %s",
+                e,
+                exc_info=True,
+            )
+
         for ns in ns_list:
             for page in self.site.allpages(
                 namespace=ns,
@@ -194,28 +211,12 @@ class MediaWikiReader(BasePydanticReader):
             ):
                 title = page.name
 
-                # Build canonical URL from site info
+                # Build canonical URL from pre-parsed site origin + path
                 url: Optional[str] = None
-                try:
-                    site_info = self.site.site
-                    base_url = site_info.get("base", "")
-                    article_path = site_info.get(
-                        "articlepath", "/wiki/$1"
-                    )
-                    if base_url:
-                        # base is e.g. "https://en.wikipedia.org/wiki/Main_Page"
-                        # We need just the origin
-                        parsed = urlparse(base_url)
-                        origin = f"{parsed.scheme}://{parsed.netloc}"
-                        url = origin + article_path.replace(
-                            "$1", title.replace(" ", "_")
-                        )
-                except Exception as e:
-                    self.logger.debug(
-                        "URL construction failed for page %r: %s",
-                        title,
-                        e,
-                        exc_info=True,
+                if url_base:
+                    origin, article_path = url_base
+                    url = origin + article_path.replace(
+                        "$1", title.replace(" ", "_")
                     )
 
                 # Extract last_modified from page revision timestamp
