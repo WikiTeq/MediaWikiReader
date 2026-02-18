@@ -238,7 +238,6 @@ class MediaWikiReader(BasePydanticReader):
                 url = self._build_page_url(title, url_base)
                 last_modified = self._extract_revision_time(page, title)
                 yield {
-
                     "title": title,
                     "url": url,
                     "last_modified": last_modified,
