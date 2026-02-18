@@ -275,14 +275,15 @@ class MediaWikiReader(BasePydanticReader):
     def load_resource(
         self,
         resource_id: str,
-        resource_url: str,
-        last_modified: Optional[datetime],
+        resource_url: Optional[str] = None,
+        last_modified: Optional[datetime] = None,
     ) -> List[Document]:
         """Load a single page as a list containing one Document.
 
         Args:
             resource_id: The page title.
-            resource_url: Pre-fetched canonical URL for the page.
+            resource_url: Pre-fetched canonical URL for the page, or None if
+                unavailable (e.g. site_info did not provide base URL).
             last_modified: Pre-fetched last-modified timestamp (or None).
 
         Returns:
@@ -363,11 +364,10 @@ class MediaWikiReader(BasePydanticReader):
         for page_record in self._get_all_pages_generator():
             url = page_record.get("url")
             if not url:
-                self.logger.warning(
-                    "Skipping page '%s': no URL in record",
+                self.logger.debug(
+                    "Page '%s': no URL in record (site_info may lack base)",
                     page_record.get("title", "?"),
                 )
-                continue
             docs = self.load_resource(
                 page_record["title"],
                 resource_url=url,
