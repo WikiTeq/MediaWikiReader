@@ -58,7 +58,7 @@ class MediaWikiReader(BasePydanticReader):
     batch_size: int = Field(
         default=50,
         gt=0,
-        description="When fetching metadata (URL, last_modified) for multiple pages: number of titles per API call. Used by get_resources_info and by load_resource when prefetched metadata is missing.",
+        description="When fetching metadata (URL, last_modified) for multiple pages: number of titles per API call. Used by get_resources_info.",
     )
     max_retries: int = Field(
         default=3,
