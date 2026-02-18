@@ -152,7 +152,7 @@ class MediaWikiReader(BasePydanticReader):
         for ns_data in namespaces.values():
             if not isinstance(ns_data, dict):
                 continue
-            if ns_data.get("content") is not True:
+            if not ns_data.get("content"):
                 continue
             ns_id = ns_data.get("id")
             if ns_id is not None:
