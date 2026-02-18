@@ -9,6 +9,12 @@ import requests
 from llama_index.readers.mediawiki import MediaWikiReader
 
 
+def test_class():
+    """MediaWikiReader must inherit from the LlamaIndex base reader."""
+    names_of_base_classes = [b.__name__ for b in MediaWikiReader.__mro__]
+    assert "BasePydanticReader" in names_of_base_classes
+
+
 @pytest.fixture
 def mock_session_cls():
     """Mock the requests.Session class."""
