@@ -330,7 +330,7 @@ class MediaWikiReader(BasePydanticReader):
             h.strong_mark = "**"
             return h.handle(html_content).strip()
         except Exception as exc:
-            self.logger.error("html2text conversion failed: %s", exc)
+            self.logger.warning("html2text conversion failed: %s", exc)
             clean_text = re.sub(r"<[^>]+>", "", html_content)
             clean_text = re.sub(r"\s+", " ", clean_text).strip()
             return clean_text
