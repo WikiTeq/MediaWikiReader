@@ -16,6 +16,7 @@ def test_class():
     """MediaWikiReader must inherit from the LlamaIndex base reader."""
     names_of_base_classes = [b.__name__ for b in MediaWikiReader.__mro__]
     assert "BasePydanticReader" in names_of_base_classes
+    assert "BaseReader" in names_of_base_classes
 
 
 @pytest.fixture
@@ -336,7 +337,7 @@ class TestResourcesInterface:
     """Public resource-based API."""
 
     def test_load_resource_with_prefetched_metadata(self, reader, mock_session):
-        """load_resource should bypass metadata calls if url/timestamp are provided."""
+        """load_resource with resource_url and last_modified only performs parse call."""
         parse_resp = _mock_response(json_data={
             "parse": {"text": {"*": "<p>Content</p>"}}
         })
