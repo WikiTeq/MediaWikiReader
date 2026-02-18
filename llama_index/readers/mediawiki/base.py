@@ -358,7 +358,8 @@ class MediaWikiReader(BasePydanticReader):
         provided, we only perform the 'parse' API call.
 
         Args:
-            resource_id: The page title.
+            resource_id: The page title (MediaWiki parse API is title-based;
+                page_id could be used in a future version for stability).
             resource_url: Optional pre-fetched canonical URL.
             last_modified: Optional pre-fetched last-modified timestamp.
 
@@ -474,12 +475,10 @@ class MediaWikiReader(BasePydanticReader):
         as the 'text' property is too large for the query generator.
         """
         for page_record in self._get_all_pages_generator():
-            title = page_record["title"]
-            url = page_record.get("url")
-            last_modified = page_record.get("last_modified")
-
             docs = self.load_resource(
-                title, resource_url=url, last_modified=last_modified
+                page_record["title"],
+                resource_url=page_record.get("url"),
+                last_modified=page_record.get("last_modified"),
             )
             yield from docs
             time.sleep(self.request_delay)
