@@ -2,20 +2,22 @@
 
 ## Overview
 
-The MediaWiki Reader loads pages from any [MediaWiki](https://www.mediawiki.org/)-based wiki (Wikipedia, Wikiversity, or your own instance) and returns them as LlamaIndex `Document` objects. It uses the wiki’s [Action API](https://www.mediawiki.org/wiki/API:Main_page): you provide the API URL, and the reader fetches page list, metadata (URL, last-modified), and parsed text, with optional rate limiting and namespace filtering.
+The MediaWiki Reader loads pages from any [MediaWiki](https://www.mediawiki.org/)-based wiki (Wikipedia, Wikiversity, or your own instance) and returns them as LlamaIndex `Document` objects. It uses the wiki’s [Action API](https://www.mediawiki.org/wiki/API:Main_page) via [mwclient](https://github.com/mwclient/mwclient): you provide the wiki **host** (and optionally **path** and **scheme**), and the reader fetches page list, metadata (URL, last-modified), and parsed text, with optional namespace filtering.
 
 ### Features
 
-- **Any MediaWiki instance** — Use `api_url` to point at any wiki (e.g. `https://en.wikipedia.org/w/api.php`).
+- **Any MediaWiki instance** — Use `host`, `path`, and `scheme` to point at any wiki (e.g. `host="en.wikipedia.org"` with default path `/w/`).
 - **Resource-based API** — Implements `load_resource` and `get_resource_info` for LlamaIndex ingestion and RAG pipelines.
 - **Efficient listing** — Batched API calls for page metadata; optional `namespaces` filter.
-- **HTML to text** — Converts wiki HTML to clean text via html2text (configurable).
+- **HTML to text** — Converts wiki HTML to clean text via html2text (with regex fallback on failure).
 
 ### Installation
 
 ```bash
 pip install llama-index-readers-mediawiki
 ```
+
+The reader depends on **mwclient** for MediaWiki API access; it is installed automatically with the package.
 
 ### Usage
 
@@ -24,10 +26,7 @@ pip install llama-index-readers-mediawiki
 ```python
 from llama_index.readers.mediawiki import MediaWikiReader
 
-reader = MediaWikiReader(
-    api_url="https://en.wikipedia.org/w/api.php",
-    user_agent="my-app/1.0",
-)
+reader = MediaWikiReader(host="en.wikipedia.org")
 
 title = "Python (programming language)"
 info = reader.get_resource_info(title)
@@ -47,12 +46,13 @@ for doc in reader.lazy_load_data():
     print(doc.metadata.get("title"), len(doc.text))
 ```
 
-**Optional: filter by namespace and tune requests:**
+**Optional: custom path/scheme, namespace filter, page limit:**
 
 ```python
 reader = MediaWikiReader(
-    api_url="https://mywiki.example.com/w/api.php",
-    request_delay=0.2,
+    host="mywiki.example.com",
+    path="/w/",
+    scheme="https",
     page_limit=100,
     namespaces=[0],  # Main namespace only
 )
@@ -60,38 +60,18 @@ reader = MediaWikiReader(
 
 ### Configuration
 
-| Parameter       | Type     | Default | Description |
-|----------------|----------|---------|-------------|
-| `api_url`      | `str`    | required | MediaWiki API endpoint (e.g. `https://en.wikipedia.org/w/api.php`). |
-| `user_agent`   | `str`    | `"llama-index-readers-mediawiki/1.0"` | User-Agent header for API requests. |
-| `request_delay`| `float`  | `0.1`   | Delay in seconds between API requests (rate limiting). |
-| `page_limit`   | `int`    | `500`   | When listing pages: max titles per API call (allpages pagination). |
-| `max_retries`  | `int`    | `3`     | Retry attempts for failed requests. |
-| `timeout`      | `int`    | `30`    | HTTP request timeout in seconds. |
-| `namespaces`   | `list[int] \| None` | `None` | Namespace IDs to list; `None` = wiki content namespaces from siteinfo API ([$wgContentNamespaces](https://www.mediawiki.org/wiki/Manual:$wgContentNamespaces)). |
-| `logger`       | `logging.Logger` | module logger | Logger instance (injectable for tests or custom logging). Not serialized. |
+| Parameter     | Type     | Default   | Description |
+|---------------|----------|-----------|-------------|
+| `host`        | `str`    | required  | MediaWiki site hostname (e.g. `en.wikipedia.org`). |
+| `path`        | `str`    | `"/w/"`   | MediaWiki script path (API at `{path}api.php`). |
+| `scheme`      | `"https" \| "http"` | `"https"` | URL scheme. |
+| `page_limit`  | `int`    | `500`     | Max page titles per allpages API call (pagination). |
+| `namespaces`  | `list[int] \| None` | `None` | Namespace IDs to list; `None` = wiki content namespaces from siteinfo API ([$wgContentNamespaces](https://www.mediawiki.org/wiki/Manual:$wgContentNamespaces)). |
+| `logger`      | `logging.Logger` | module logger | Logger instance (injectable for tests or custom logging). Not serialized. |
 
 ### Manual testing
 
-A script runs the reader against a live wiki (e.g. English Wikipedia) and checks `get_resource_info`, `load_resource`, and `lazy_load_data`:
-
-```bash
-python scripts/manual_user_test.py
-```
-
-Optional environment variables:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MEDIAWIKI_HOST` | `en.wikipedia.org` | Wiki hostname |
-| `MEDIAWIKI_PATH` | `/w/` | Script path (API at `{path}api.php`) |
-| `MEDIAWIKI_SCHEME` | `https` | `https` or `http` |
-| `MEDIAWIKI_USER` | — | Username for private wiki login |
-| `MEDIAWIKI_PASSWORD` | — | Password or bot password |
-| `MEDIAWIKI_TEST_TITLE` | `Python (programming language)` | Page title for single-page tests |
-| `MAX_LAZY_DOCS` | `3` | Max documents to take from `lazy_load_data()` |
-
-For a **private wiki**, set `MEDIAWIKI_HOST` (and `MEDIAWIKI_PATH` / `MEDIAWIKI_SCHEME` if not default) and `MEDIAWIKI_USER` / `MEDIAWIKI_PASSWORD`. The reader uses `host`, `path`, and `scheme`; credentials are passed to `reader.login()` when both user and password are set.
+For manual testing, run the usage examples above with your wiki’s `host` (and `path`/`scheme` if not default). For a **private wiki**, set `host`, call `reader.login(username, password)` (or use a bot password), then use `load_resource` / `lazy_load_data` as usual.
 
 ### License
 
