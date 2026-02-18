@@ -13,7 +13,7 @@ from typing import Any, Dict, Iterator, List, Optional
 import html2text
 import requests
 
-from llama_index.core.bridge.pydantic import Field
+from llama_index.core.bridge.pydantic import Field, PrivateAttr
 from llama_index.core.readers.base import BasePydanticReader
 from llama_index.core.schema import Document
 
@@ -74,6 +74,7 @@ class MediaWikiReader(BasePydanticReader):
 
     # -- Non-serialised internal state ----------------------------------------
     _session: Optional[requests.Session] = None
+    _content_namespace_ids: Optional[List[int]] = PrivateAttr(default=None)
 
     # -- Construction helpers -------------------------------------------------
 
@@ -221,10 +222,9 @@ class MediaWikiReader(BasePydanticReader):
         # If namespaces is None, use the wiki's content namespaces (siteinfo API).
         # Otherwise use the explicit list. We iterate because gapnamespace accepts one value.
         if self.namespaces is None:
-            namespaces = getattr(self, "_content_namespace_ids", None)
-            if namespaces is None:
-                namespaces = self._fetch_content_namespace_ids()
-                self._content_namespace_ids = namespaces  # type: ignore[attr-defined]
+            if self._content_namespace_ids is None:
+                self._content_namespace_ids = self._fetch_content_namespace_ids()
+            namespaces = self._content_namespace_ids
         else:
             namespaces = self.namespaces
 

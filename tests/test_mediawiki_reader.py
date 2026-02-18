@@ -265,6 +265,38 @@ class TestGetAllPages:
         mock_session.get.return_value = _mock_response(json_data={})
         ids_empty = reader._fetch_content_namespace_ids()
         assert ids_empty == [0]
+
+    def test_fetch_content_namespace_ids_returns_none(self, mock_session):
+        """When _make_api_request returns None (e.g. network failure), fallback to [0]."""
+        reader = _make_reader()
+        mock_session.get.side_effect = requests.exceptions.RequestException("network error")
+        ids = reader._fetch_content_namespace_ids()
+        assert ids == [0]
+
+    def test_content_namespaces_cache_fetched_once(self, mock_session):
+        """Second call to _get_all_pages_generator() does not refetch siteinfo; cache is per instance."""
+        siteinfo_resp = _mock_response(json_data={
+            "query": {
+                "namespaces": {
+                    "0": {"id": 0, "*": "", "content": True},
+                }
+            }
+        })
+        allpages_resp = _mock_response(json_data={
+            "query": {"pages": {"1": {"title": "A", "canonicalurl": "https://example.com/A", "revisions": [{"timestamp": "2024-01-01T00:00:00Z"}]}}}
+        })
+        mock_session.get.side_effect = [siteinfo_resp, allpages_resp, allpages_resp]
+
+        reader = _make_reader(namespaces=None)
+        list(reader._get_all_pages_generator())
+        list(reader._get_all_pages_generator())
+
+        call_params_list = [c[1]["params"] for c in mock_session.get.call_args_list]
+        siteinfo_calls = [p for p in call_params_list if p.get("meta") == "siteinfo" and p.get("siprop") == "namespaces"]
+        assert len(siteinfo_calls) == 1
+
+
+class TestGetPageContents:
     """Content retrieval via parse action."""
 
     def test_success(self, reader, mock_session):
