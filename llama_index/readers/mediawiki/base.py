@@ -276,7 +276,12 @@ class MediaWikiReader(BasePydanticReader):
             h.emphasis_mark = "*"
             h.strong_mark = "**"
             return h.handle(html_content).strip()
-        except Exception:
+        except Exception as e:
+            _internal_logger.debug(
+                "html2text failed, using tag-strip fallback: %s",
+                e,
+                exc_info=True,
+            )
             clean_text = re.sub(r"<[^>]+>", "", html_content)
             clean_text = re.sub(r"\s+", " ", clean_text).strip()
             return clean_text
