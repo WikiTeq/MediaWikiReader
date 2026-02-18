@@ -71,6 +71,28 @@ reader = MediaWikiReader(
 | `namespaces`   | `list[int] \| None` | `None` | Namespace IDs to list; `None` = wiki content namespaces from siteinfo API ([$wgContentNamespaces](https://www.mediawiki.org/wiki/Manual:$wgContentNamespaces)). |
 | `logger`       | `logging.Logger` | module logger | Logger instance (injectable for tests or custom logging). Not serialized. |
 
+### Manual testing
+
+A script runs the reader against a live wiki (e.g. English Wikipedia) and checks `get_resource_info`, `load_resource`, and `lazy_load_data`:
+
+```bash
+python scripts/manual_user_test.py
+```
+
+Optional environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MEDIAWIKI_HOST` | `en.wikipedia.org` | Wiki hostname |
+| `MEDIAWIKI_PATH` | `/w/` | Script path (API at `{path}api.php`) |
+| `MEDIAWIKI_SCHEME` | `https` | `https` or `http` |
+| `MEDIAWIKI_USER` | — | Username for private wiki login |
+| `MEDIAWIKI_PASSWORD` | — | Password or bot password |
+| `MEDIAWIKI_TEST_TITLE` | `Python (programming language)` | Page title for single-page tests |
+| `MAX_LAZY_DOCS` | `3` | Max documents to take from `lazy_load_data()` |
+
+For a **private wiki**, set `MEDIAWIKI_HOST` (and `MEDIAWIKI_PATH` / `MEDIAWIKI_SCHEME` if not default) and `MEDIAWIKI_USER` / `MEDIAWIKI_PASSWORD`. The reader uses `host`, `path`, and `scheme`; credentials are passed to `reader.login()` when both user and password are set.
+
 ### License
 
 MIT.

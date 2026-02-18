@@ -1,17 +1,17 @@
 """MediaWiki reader for LlamaIndex.
 
 Provides a LlamaIndex-compatible reader that fetches and converts pages from
-any MediaWiki instance into LlamaIndex Documents.
+any MediaWiki instance into LlamaIndex Documents, using mwclient for all
+MediaWiki API interactions.
 """
 
 import logging
 import re
-import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterator, List, Optional
 
 import html2text
-import requests
+import mwclient
 
 from llama_index.core.bridge.pydantic import Field, PrivateAttr
 from llama_index.core.readers.base import BasePydanticReader
@@ -23,9 +23,22 @@ _internal_logger = logging.getLogger(__name__)
 class MediaWikiReader(BasePydanticReader):
     """LlamaIndex reader for MediaWiki instances.
 
-    Fetches pages from a MediaWiki API endpoint, converts HTML content to clean
-    text, and returns LlamaIndex Documents with metadata (title, URL,
-    last_modified).
+    Fetches pages from a MediaWiki site, converts HTML content to clean text,
+    and returns LlamaIndex Documents with metadata (title, URL, last_modified).
+
+    Uses `mwclient` for all API interactions. Supports authentication via
+    :meth:`login`.
+
+    Example::
+
+        reader = MediaWikiReader(host="en.wikipedia.org")
+        docs = list(reader.lazy_load_data())
+
+    With authentication::
+
+        reader = MediaWikiReader(host="my.private.wiki")
+        reader.login("username", "password")
+        docs = list(reader.lazy_load_data())
 
     Implements BasePydanticReader (for serialization / LlamaHub compatibility)
     and provides load_resource and get_resource_info for resource-based use.
@@ -35,37 +48,33 @@ class MediaWikiReader(BasePydanticReader):
 
     # -- Pydantic fields (serialisable config) --------------------------------
 
-    api_url: str = Field(
+    host: str = Field(
         min_length=1,
-        description="MediaWiki API endpoint URL",
+        description="MediaWiki site hostname (e.g. 'en.wikipedia.org')",
     )
-    user_agent: str = Field(
-        default="llama-index-readers-mediawiki/1.0",
-        description="User-Agent header for HTTP requests",
+    path: str = Field(
+        default="/w/",
+        description="MediaWiki script path (default '/w/')",
     )
-    request_delay: float = Field(
-        default=0.1,
-        ge=0,
-        description="Delay in seconds between API requests (rate limiting)",
+    scheme: str = Field(
+        default="https",
+        description="URL scheme: 'https' or 'http'",
     )
     page_limit: int = Field(
         default=500,
         gt=0,
-        description="When listing pages (allpages generator): max page titles per API call. Each request returns up to this many; pagination continues until the wiki is fully listed.",
-    )
-    max_retries: int = Field(
-        default=3,
-        ge=0,
-        description="Maximum number of retry attempts for API requests",
-    )
-    timeout: int = Field(
-        default=30,
-        gt=0,
-        description="HTTP request timeout in seconds",
+        description=(
+            "Max page titles per allpages API call. Pagination continues "
+            "until the wiki is fully listed."
+        ),
     )
     namespaces: Optional[List[int]] = Field(
         default=None,
-        description="Namespace IDs to list (None = wiki content namespaces from siteinfo API, i.e. $wgContentNamespaces). Set explicitly to override.",
+        description=(
+            "Namespace IDs to list. None = wiki content namespaces from "
+            "siteinfo API (i.e. $wgContentNamespaces). Set explicitly to "
+            "override."
+        ),
     )
     logger: logging.Logger = Field(
         default_factory=lambda: _internal_logger,
@@ -74,236 +83,188 @@ class MediaWikiReader(BasePydanticReader):
     )
 
     # -- Non-serialised internal state ----------------------------------------
-    _session: Optional[requests.Session] = None
+    _site: Optional[mwclient.Site] = PrivateAttr(default=None)
     _content_namespace_ids: Optional[List[int]] = PrivateAttr(default=None)
 
     # -- Construction helpers -------------------------------------------------
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        self.logger.info("Initialized MediaWikiReader for %s", self.api_url)
+        self.logger.info(
+            "Initialized MediaWikiReader for %s://%s%s",
+            self.scheme,
+            self.host,
+            self.path,
+        )
 
-    # -- Session lifecycle ----------------------------------------------------
+    # -- mwclient Site lifecycle ----------------------------------------------
 
     @property
-    def session(self) -> requests.Session:
-        """Return the HTTP session, creating one if needed."""
-        if self._session is None:
-            self._session = requests.Session()
-            self._session.headers.update({"User-Agent": self.user_agent})
-        return self._session
+    def site(self) -> mwclient.Site:
+        """Return the mwclient Site, creating one lazily if needed."""
+        if self._site is None:
+            self._site = mwclient.Site(
+                self.host,
+                path=self.path,
+                scheme=self.scheme,
+            )
+        return self._site
 
+    def login(self, username: str, password: str) -> None:
+        """Authenticate to the wiki using user credentials.
 
-    # -- Internal API helpers -------------------------------------------------
-
-    def _make_api_request(
-        self,
-        params: Dict[str, Any],
-        max_retries: Optional[int] = None,
-    ) -> Optional[Dict[str, Any]]:
-        """Make a request to the MediaWiki API with retries and error handling.
+        Uses ``clientlogin`` (MW 1.27+). For bot passwords, use the bot
+        password as the ``password`` argument with the full bot-username
+        (e.g. ``User@BotName``).
 
         Args:
-            params: Dictionary of API parameters (``format=json`` is added
-                automatically).
-            max_retries: Optional override for the number of retry attempts.
+            username: MediaWiki username.
+            password: MediaWiki password or bot password.
 
-        Returns:
-            Parsed JSON response, or ``None`` if the request failed.
+        Raises:
+            mwclient.errors.LoginError: If login fails.
         """
-        params["format"] = "json"
+        self.site.clientlogin(username=username, password=password)
+        self.logger.info("Logged in as %s", username)
 
-        # Determine total attempts (at least 1 if max_retries=0)
-        retries = max_retries if max_retries is not None else self.max_retries
-        max_attempts = retries + 1
-
-        for attempt in range(max_attempts):
-            try:
-                response = self.session.get(
-                    self.api_url, params=params, timeout=self.timeout
-                )
-                response.raise_for_status()
-                return response.json()
-
-            except (requests.exceptions.RequestException, ValueError) as exc:
-                if attempt < max_attempts - 1:
-                    self.logger.warning(
-                        "API request failed (attempt %d/%d): %s",
-                        attempt + 1,
-                        max_attempts,
-                        exc,
-                    )
-                    if (
-                        isinstance(exc, requests.exceptions.HTTPError)
-                        and exc.response is not None
-                        and exc.response.status_code == 429
-                    ):
-                        retry_after = int(exc.response.headers.get("Retry-After", 5))
-                        time.sleep(retry_after)
-                    else:
-                        time.sleep(2**attempt)
-                    continue
-                else:
-                    self.logger.error("API request failed after %d attempts: %s", max_attempts, exc)
-                    return None
-
-        return None
+    # -- Internal helpers -----------------------------------------------------
 
     def _fetch_content_namespace_ids(self) -> List[int]:
-        """Return namespace IDs that the wiki marks as content (see $wgContentNamespaces).
+        """Return namespace IDs marked as content ($wgContentNamespaces).
 
-        Uses action=query&meta=siteinfo&siprop=namespaces and filters for the
-        \"content\" attribute. See https://www.mediawiki.org/wiki/Manual:$wgContentNamespaces
-        and https://www.mediawiki.org/wiki/API:Siteinfo.
-
-        Returns:
-            List of namespace IDs (e.g. [0] for main only). On API failure or
-            missing data, returns [0] as a safe default.
+        Uses ``action=query&meta=siteinfo&siprop=namespaces`` and filters for
+        the ``content`` attribute. Falls back to ``[0]`` on failure.
         """
-        data = self._make_api_request({
-            "action": "query",
-            "meta": "siteinfo",
-            "siprop": "namespaces",
-        })
-        if not data:
-            self.logger.warning("Could not fetch siteinfo; defaulting to main namespace (0).")
+        try:
+            result = self.site.get(
+                "query", meta="siteinfo", siprop="namespaces"
+            )
+        except mwclient.errors.APIError as exc:
+            self.logger.warning(
+                "Could not fetch siteinfo; defaulting to main namespace (0): %s",
+                exc,
+            )
             return [0]
 
-        namespaces = data.get("query", {}).get("namespaces", {})
+        namespaces = result.get("query", {}).get("namespaces", {})
         ids: List[int] = []
-        for ns_key, ns_data in namespaces.items():
+        for ns_data in namespaces.values():
             if not isinstance(ns_data, dict):
                 continue
             if ns_data.get("content") is not True:
                 continue
-            # id can be in the value or implied by the key (string or int)
             ns_id = ns_data.get("id")
-            if ns_id is None:
-                try:
-                    ns_id = int(ns_key)
-                except (TypeError, ValueError):
-                    continue
-            ids.append(int(ns_id))
+            if ns_id is not None:
+                ids.append(int(ns_id))
 
         if not ids:
-            self.logger.warning("No content namespaces in siteinfo; defaulting to main namespace (0).")
+            self.logger.warning(
+                "No content namespaces in siteinfo; defaulting to main namespace (0)."
+            )
             return [0]
         return sorted(ids)
 
     def _get_all_pages_generator(self) -> Iterator[Dict[str, Any]]:
-        """Yield rich dictionaries for all pages using the generator API.
+        """Yield rich dicts for all pages via mwclient's allpages.
 
         Each yielded dict contains:
             - title (str)
             - url (str or None)
             - last_modified (datetime or None)
-
-        This is much more efficient than fetching titles first and then
-        querying metadata for each title.
         """
-        # If namespaces is None, use the wiki's content namespaces (siteinfo API).
-        # Otherwise use the explicit list. We iterate because gapnamespace accepts one value.
         if self.namespaces is None:
             if self._content_namespace_ids is None:
                 self._content_namespace_ids = self._fetch_content_namespace_ids()
-            namespaces = self._content_namespace_ids
+            ns_list = self._content_namespace_ids
         else:
-            namespaces = self.namespaces
+            ns_list = self.namespaces
 
-        for ns in namespaces:
-            continue_params: Dict[str, Any] = {}
-            while True:
-                params: Dict[str, Any] = {
-                    "action": "query",
-                    "generator": "allpages",
-                    "gaplimit": self.page_limit,
-                    "prop": "info|revisions",
-                    "inprop": "url",
-                    "rvprop": "timestamp",
-                    "format": "json",
-                    **continue_params,
-                }
-                params["gapnamespace"] = ns
+        for ns in ns_list:
+            for page in self.site.allpages(
+                namespace=ns,
+                generator=True,
+                api_chunk_size=self.page_limit,
+            ):
+                title = page.name
 
-                data = self._make_api_request(params)
-                if not data:
-                    self.logger.warning(
-                        "Allpages API request returned no data for namespace %s; stopping iteration.",
-                        ns,
+                # Build canonical URL from site info
+                url: Optional[str] = None
+                try:
+                    site_info = self.site.site
+                    base_url = site_info.get("base", "")
+                    article_path = site_info.get(
+                        "articlepath", "/wiki/$1"
                     )
-                    break
+                    if base_url:
+                        # base is e.g. "https://en.wikipedia.org/wiki/Main_Page"
+                        # We need just the origin
+                        from urllib.parse import urlparse
 
-                pages_dict = data.get("query", {}).get("pages", {})
-                # generator=allpages returns a dict keyed by page ID
-                for page_data in pages_dict.values():
-                    title = page_data.get("title")
-                    if not title:
-                        continue
+                        parsed = urlparse(base_url)
+                        origin = f"{parsed.scheme}://{parsed.netloc}"
+                        url = origin + article_path.replace(
+                            "$1", title.replace(" ", "_")
+                        )
+                except Exception:
+                    pass
 
-                    url = page_data.get("canonicalurl")
+                # Extract last_modified from page revision timestamp
+                last_modified: Optional[datetime] = None
+                try:
+                    rev_ts = page.revision
+                    if rev_ts:
+                        last_modified = datetime.fromtimestamp(
+                            0, tz=timezone.utc
+                        )
+                        # mwclient stores revisions; .revision is the
+                        # latest revision timestamp as a time.struct_time
+                        import time as _time
 
-                    last_modified = None
-                    revisions = page_data.get("revisions", [])
-                    if revisions:
-                        ts_str = revisions[0].get("timestamp")
-                        if ts_str:
-                            try:
-                                # MediaWiki uses ISO8601 with Z
-                                last_modified = datetime.fromisoformat(
-                                    ts_str.replace("Z", "+00:00")
-                                )
-                            except (ValueError, TypeError):
-                                pass
+                        ts = page.last_rev_time
+                        if ts:
+                            last_modified = datetime(
+                                *ts[:6], tzinfo=timezone.utc
+                            )
+                except Exception:
+                    pass
 
-                    yield {
-                        "title": title,
-                        "url": url,
-                        "last_modified": last_modified,
-                    }
-
-                continue_info = data.get("continue")
-                if continue_info:
-                    continue_params = continue_info
-                    time.sleep(self.request_delay)
-                else:
-                    break
-
+                yield {
+                    "title": title,
+                    "url": url,
+                    "last_modified": last_modified,
+                }
 
     def _get_page_contents(self, page_title: str) -> Optional[str]:
-        """Fetch parsed HTML content for a page.
+        """Fetch parsed HTML content for a page via mwclient's parse API.
 
         Returns:
-            Raw HTML from the parse API, or ``None`` if the request or parse
-            result is missing. Callers should pass the result to
-            ``_html_to_clean_text`` for plain text.
+            Raw HTML from the API, or ``None`` on failure.
         """
-        params = {
-            "action": "parse",
-            "page": page_title,
-            "prop": "text",
-            "disableeditsection": "true",
-            "disabletoc": "true",
-            "disablelimitreport": "true",
-            "format": "json",
-        }
-
-        parsed_data = self._make_api_request(params)
-        if not parsed_data:
+        try:
+            result = self.site.parse(
+                page=page_title, prop="text"
+            )
+        except mwclient.errors.APIError as exc:
+            self.logger.warning(
+                "Parse API failed for '%s': %s", page_title, exc
+            )
             return None
 
-        parse_result = parsed_data.get("parse", {})
-        if not parse_result:
+        if not result:
             self.logger.warning("No parse result for page '%s'", page_title)
             return None
 
-        html_content = parse_result.get("text", {}).get("*", "")
+        html_content = result.get("text", {}).get("*", "")
         if not html_content:
-            self.logger.warning("No content in parse result for page '%s'", page_title)
+            self.logger.warning(
+                "No content in parse result for page '%s'", page_title
+            )
             return None
 
         return html_content
 
-    def _html_to_clean_text(self, html_content: str) -> str:
+    @staticmethod
+    def _html_to_clean_text(html_content: str) -> str:
         """Convert MediaWiki HTML to clean Markdown text."""
         try:
             h = html2text.HTML2Text()
@@ -314,8 +275,7 @@ class MediaWikiReader(BasePydanticReader):
             h.emphasis_mark = "*"
             h.strong_mark = "**"
             return h.handle(html_content).strip()
-        except Exception as exc:
-            self.logger.warning("html2text conversion failed: %s", exc)
+        except Exception:
             clean_text = re.sub(r"<[^>]+>", "", html_content)
             clean_text = re.sub(r"\s+", " ", clean_text).strip()
             return clean_text
@@ -330,24 +290,18 @@ class MediaWikiReader(BasePydanticReader):
     ) -> List[Document]:
         """Load a single page as a list containing one Document.
 
-        Caller must supply resource_url and last_modified (e.g. from
-        get_resource_info or from the allpages generator). Only the 'parse'
-        API call is made.
-
         Args:
-            resource_id: The page title (MediaWiki parse API is title-based;
-                page_id could be used in a future version for stability).
+            resource_id: The page title.
             resource_url: Pre-fetched canonical URL for the page.
             last_modified: Pre-fetched last-modified timestamp (or None).
 
         Returns:
-            A one-element list with the page Document, or an empty list on failure.
+            A one-element list with the page Document, or empty on failure.
         """
         content = self._get_page_contents(resource_id)
         if not content:
             return []
 
-        # Build Document (convert raw HTML to clean text)
         content = self._html_to_clean_text(content)
         doc = Document(
             text=content,
@@ -355,7 +309,9 @@ class MediaWikiReader(BasePydanticReader):
             metadata={
                 "title": resource_id,
                 "url": resource_url,
-                "last_modified": last_modified.isoformat() if last_modified else None,
+                "last_modified": (
+                    last_modified.isoformat() if last_modified else None
+                ),
             },
         )
         return [doc]
@@ -365,28 +321,30 @@ class MediaWikiReader(BasePydanticReader):
     def get_resource_info(self, resource_id: str) -> Dict[str, Any]:
         """Return metadata for a single page (URL and last_modified).
 
-        Makes one API call. Use with load_resource when you need to fetch
-        URL and last_modified for a page title.
-
         Args:
             resource_id: Page title.
 
         Returns:
             ``{"last_modified": datetime | None, "url": str | None}``.
         """
-        params = {
-            "action": "query",
-            "titles": resource_id,
-            "prop": "info|revisions",
-            "inprop": "url",
-            "rvprop": "timestamp",
-        }
-        data = self._make_api_request(params)
-        if not data:
+        try:
+            result = self.site.get(
+                "query",
+                titles=resource_id,
+                prop="info|revisions",
+                inprop="url",
+                rvprop="timestamp",
+            )
+        except mwclient.errors.APIError as exc:
+            self.logger.warning(
+                "Query API failed for '%s': %s", resource_id, exc
+            )
             return {"last_modified": None, "url": None}
 
-        pages = data.get("query", {}).get("pages", {})
-        page_data = next((p for p in pages.values() if p.get("title")), None)
+        pages = result.get("query", {}).get("pages", {})
+        page_data = next(
+            (p for p in pages.values() if p.get("title")), None
+        )
         last_modified = None
         url = None
         if page_data and "missing" not in page_data:
@@ -409,9 +367,8 @@ class MediaWikiReader(BasePydanticReader):
     def lazy_load_data(self, *args: Any, **kwargs: Any) -> Iterator[Document]:
         """Yield one Document per page in the wiki.
 
-        Optimized to fetch content while traversing pages to avoid N+1 queries.
-        Note: Content (the 'parse' action) still requires a separate call per page
-        as the 'text' property is too large for the query generator.
+        Iterates all pages via mwclient's allpages, then fetches parsed
+        content for each page individually.
         """
         for page_record in self._get_all_pages_generator():
             url = page_record.get("url")
@@ -427,4 +384,3 @@ class MediaWikiReader(BasePydanticReader):
                 last_modified=page_record.get("last_modified"),
             )
             yield from docs
-            time.sleep(self.request_delay)

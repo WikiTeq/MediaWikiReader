@@ -1,214 +1,147 @@
-"""Tests for MediaWikiReader (Pytest version)."""
+"""Tests for MediaWikiReader (mwclient-backed version)."""
 
 import logging
+from datetime import datetime, timezone
+from unittest.mock import MagicMock, Mock, patch, PropertyMock
 
 import pytest
-from datetime import datetime, timezone
-from unittest.mock import Mock, patch
-
-import requests
 from pydantic import ValidationError
 
 from llama_index.readers.mediawiki import MediaWikiReader
 
 
-def test_class():
-    """MediaWikiReader must inherit from the LlamaIndex base reader."""
-    names_of_base_classes = [b.__name__ for b in MediaWikiReader.__mro__]
-    assert "BasePydanticReader" in names_of_base_classes
-    assert "BaseReader" in names_of_base_classes
-
-
-@pytest.fixture
-def mock_session_cls():
-    """Mock the requests.Session class."""
-    with patch("llama_index.readers.mediawiki.base.requests.Session") as mocked:
-        yield mocked
-
-
-@pytest.fixture
-def mock_session(mock_session_cls):
-    """Provide a mock session instance."""
-    session = Mock()
-    mock_session_cls.return_value = session
-    return session
-
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _make_reader(**overrides):
-    """Create a MediaWikiReader with sensible defaults."""
-    kwargs = {"api_url": "https://example.com/w/api.php"}
+    """Create a MediaWikiReader with sensible defaults (mwclient.Site is mocked)."""
+    kwargs = {"host": "example.com"}
     kwargs.update(overrides)
     return MediaWikiReader(**kwargs)
 
 
-@pytest.fixture
-def reader(mock_session):
-    """Provide a MediaWikiReader instance."""
-    return _make_reader()
+def _mock_site():
+    """Create a mock mwclient.Site."""
+    site = MagicMock()
+    site.site = {
+        "base": "https://example.com/wiki/Main_Page",
+        "articlepath": "/wiki/$1",
+    }
+    return site
 
 
-def _mock_response(status_code=200, json_data=None, json_exception=None):
-    """Build a mock requests.Response."""
-    resp = Mock()
-    resp.status_code = status_code
-    resp.raise_for_status = Mock()
-    if json_exception:
-        resp.json.side_effect = json_exception
-    elif json_data is not None:
-        resp.json.return_value = json_data
-    return resp
-
+# ---------------------------------------------------------------------------
+# Construction & Config
+# ---------------------------------------------------------------------------
 
 class TestMediaWikiReaderInit:
     """Construction and config validation."""
 
-    def test_missing_api_url_raises(self, mock_session_cls):
-        with pytest.raises(ValidationError, match="api_url"):
-            MediaWikiReader(api_url="")
+    def test_class(self):
+        """MediaWikiReader must inherit from the LlamaIndex base reader."""
+        names_of_base_classes = [b.__name__ for b in MediaWikiReader.__mro__]
+        assert "BasePydanticReader" in names_of_base_classes
+        assert "BaseReader" in names_of_base_classes
 
-    def test_negative_request_delay_raises(self, mock_session_cls):
-        with pytest.raises(ValidationError, match="request_delay"):
-            _make_reader(request_delay=-1)
+    @patch("llama_index.readers.mediawiki.base.mwclient.Site")
+    def test_missing_host_raises(self, _mock_site_cls):
+        with pytest.raises(ValidationError, match="host"):
+            MediaWikiReader(host="")
 
-    def test_zero_page_limit_raises(self, mock_session_cls):
+    @patch("llama_index.readers.mediawiki.base.mwclient.Site")
+    def test_zero_page_limit_raises(self, _mock_site_cls):
         with pytest.raises(ValidationError, match="page_limit"):
             _make_reader(page_limit=0)
 
-    def test_negative_max_retries_raises(self, mock_session_cls):
-        with pytest.raises(ValidationError, match="max_retries"):
-            _make_reader(max_retries=-1)
+    @patch("llama_index.readers.mediawiki.base.mwclient.Site")
+    def test_defaults(self, _mock_site_cls):
+        reader = _make_reader()
+        assert reader.host == "example.com"
+        assert reader.path == "/w/"
+        assert reader.scheme == "https"
+        assert reader.page_limit == 500
+        assert reader.namespaces is None
 
-    def test_zero_timeout_raises(self, mock_session_cls):
-        with pytest.raises(ValidationError, match="timeout"):
-            _make_reader(timeout=0)
-
-    def test_logger_injection(self, mock_session_cls):
-        """Caller can inject a custom logger (e.g. for tests or logging config)."""
+    @patch("llama_index.readers.mediawiki.base.mwclient.Site")
+    def test_logger_injection(self, _mock_site_cls):
         custom = logging.getLogger("custom.mediawiki")
         reader = _make_reader(logger=custom)
         assert reader.logger is custom
 
 
-class TestMakeApiRequest:
-    """Low-level _make_api_request behaviour."""
+# ---------------------------------------------------------------------------
+# Site property (lazy creation)
+# ---------------------------------------------------------------------------
 
-    def test_success(self, reader, mock_session):
-        mock_session.get.return_value = _mock_response(json_data={"ok": True})
-        result = reader._make_api_request({"action": "query"})
-        assert result == {"ok": True}
+class TestSiteProperty:
+    """The .site property lazily creates an mwclient.Site."""
 
-    def test_network_error_retries(self, reader, mock_session):
-        mock_session.get.side_effect = requests.exceptions.RequestException("err")
-        result = reader._make_api_request({"action": "query"})
-        assert result is None
-        assert mock_session.get.call_count == 4
+    @patch("llama_index.readers.mediawiki.base.mwclient.Site")
+    def test_creates_site_lazily(self, mock_site_cls):
+        reader = _make_reader()
+        mock_site_cls.assert_not_called()
 
-    def test_rate_limiting_429(self, reader, mock_session):
-        rate_resp = Mock()
-        rate_resp.status_code = 429
-        rate_resp.headers = {"Retry-After": "2"}
-        rate_resp.raise_for_status = Mock(
-            side_effect=requests.exceptions.HTTPError(response=rate_resp)
+        _ = reader.site
+
+        mock_site_cls.assert_called_once_with(
+            "example.com", path="/w/", scheme="https"
         )
 
-        ok_resp = _mock_response(json_data={"test": "data"})
-        mock_session.get.side_effect = [rate_resp, ok_resp]
+    @patch("llama_index.readers.mediawiki.base.mwclient.Site")
+    def test_returns_same_instance(self, mock_site_cls):
+        reader = _make_reader()
+        site1 = reader.site
+        site2 = reader.site
+        assert site1 is site2
+        assert mock_site_cls.call_count == 1
 
-        result = reader._make_api_request({"action": "query"})
-        assert result == {"test": "data"}
-        assert mock_session.get.call_count == 2
 
-    @patch("llama_index.readers.mediawiki.base.time.sleep")
-    def test_timeout(self, mock_sleep, reader, mock_session):
-        mock_session.get.side_effect = requests.exceptions.Timeout("timeout")
-        result = reader._make_api_request({"action": "query"})
-        assert result is None
-        assert mock_session.get.call_count == 4
+# ---------------------------------------------------------------------------
+# Login
+# ---------------------------------------------------------------------------
 
-    @patch("llama_index.readers.mediawiki.base.time.sleep")
-    def test_exponential_backoff(self, mock_sleep, reader, mock_session):
-        mock_session.get.side_effect = requests.exceptions.RequestException("err")
-        reader._make_api_request({"action": "query"})
-        delays = [call[0][0] for call in mock_sleep.call_args_list]
-        assert delays == [1, 2, 4]
+class TestLogin:
+    """Authentication via clientlogin."""
 
-    def test_empty_response(self, reader, mock_session):
-        mock_session.get.return_value = _mock_response(json_data={})
-        result = reader._make_api_request({"action": "query"})
-        assert result == {}
+    @patch("llama_index.readers.mediawiki.base.mwclient.Site")
+    def test_login_calls_clientlogin(self, mock_site_cls):
+        mock_site = _mock_site()
+        mock_site_cls.return_value = mock_site
 
-    def test_invalid_json(self, reader, mock_session):
-        mock_session.get.return_value = _mock_response(
-            json_exception=ValueError("bad json")
+        reader = _make_reader()
+        reader.login("testuser", "testpass")
+
+        mock_site.clientlogin.assert_called_once_with(
+            username="testuser", password="testpass"
         )
-        result = reader._make_api_request({"action": "query"})
-        assert result is None
 
-    def test_zero_retries(self, reader, mock_session):
-        """max_retries=0 should still allow 1 attempt."""
-        mock_session.get.return_value = _mock_response(json_data={"ok": True})
-        result = reader._make_api_request({"action": "query"}, max_retries=0)
-        assert result == {"ok": True}
-        assert mock_session.get.call_count == 1
+    @patch("llama_index.readers.mediawiki.base.mwclient.Site")
+    def test_login_failure_raises(self, mock_site_cls):
+        import mwclient.errors
+
+        mock_site = _mock_site()
+        mock_site.clientlogin.side_effect = mwclient.errors.LoginError(
+            mock_site, "FAIL", "Bad credentials"
+        )
+        mock_site_cls.return_value = mock_site
+
+        reader = _make_reader()
+        with pytest.raises(mwclient.errors.LoginError):
+            reader.login("bad", "creds")
 
 
-class TestGetAllPages:
-    """Page listing and pagination."""
+# ---------------------------------------------------------------------------
+# Content namespace discovery
+# ---------------------------------------------------------------------------
 
-    def test_generator_rich_response(self, mock_session):
-        reader = _make_reader(namespaces=[0])  # explicit so we don't call siteinfo
-        mock_session.get.return_value = _mock_response(json_data={
-            "query": {"pages": {
-                "1": {
-                    "title": "Page 1",
-                    "canonicalurl": "https://example.com/Page_1",
-                    "revisions": [{"timestamp": "2024-01-01T12:00:00Z"}]
-                }
-            }}
-        })
+class TestFetchContentNamespaceIds:
+    """_fetch_content_namespace_ids filters namespaces for content=True."""
 
-        pages = list(reader._get_all_pages_generator())
-        assert len(pages) == 1
-        assert pages[0]["title"] == "Page 1"
-        assert pages[0]["url"] == "https://example.com/Page_1"
-        assert pages[0]["last_modified"].year == 2024
-
-    @patch("llama_index.readers.mediawiki.base.time.sleep")
-    def test_pagination(self, mock_sleep, mock_session):
-        reader = _make_reader(namespaces=[0])  # explicit so we don't call siteinfo
-        first = _mock_response(json_data={
-            "query": {"pages": {"1": {"title": "Page 1"}}},
-            "continue": {"gapcontinue": "Page_2", "continue": "gapcontinue||"},
-        })
-        second = _mock_response(json_data={
-            "query": {"pages": {"2": {"title": "Page 2"}}}
-        })
-        mock_session.get.side_effect = [first, second]
-
-        pages = list(reader._get_all_pages_generator())
-        assert len(pages) == 2
-        assert mock_session.get.call_count == 2
-        mock_sleep.assert_called_once()
-
-    def test_namespace_iteration(self, mock_session):
-        # Multiple namespaces should trigger multiple API call series
-        reader = _make_reader(namespaces=[0, 1])
-
-        resp_ns0 = _mock_response(json_data={"query": {"pages": {"1": {"title": "A"}}}})
-        resp_ns1 = _mock_response(json_data={"query": {"pages": {"2": {"title": "Talk:A"}}}})
-        mock_session.get.side_effect = [resp_ns0, resp_ns1]
-
-        pages = list(reader._get_all_pages_generator())
-        assert len(pages) == 2
-        assert mock_session.get.call_count == 2
-
-        # Verify gapnamespace was passed correctly for each call
-        assert mock_session.get.call_args_list[0][1]["params"]["gapnamespace"] == 0
-        assert mock_session.get.call_args_list[1][1]["params"]["gapnamespace"] == 1
-
-    def test_content_namespaces_default(self, mock_session):
-        """When namespaces is None, reader fetches content namespaces via siteinfo and uses them."""
-        siteinfo_resp = _mock_response(json_data={
+    @patch("llama_index.readers.mediawiki.base.mwclient.Site")
+    def test_filters_content_namespaces(self, mock_site_cls):
+        mock_site = _mock_site()
+        mock_site.get.return_value = {
             "query": {
                 "namespaces": {
                     "0": {"id": 0, "*": "", "content": True},
@@ -216,129 +149,221 @@ class TestGetAllPages:
                     "4": {"id": 4, "*": "Project", "content": True},
                 }
             }
-        })
-        allpages_ns0 = _mock_response(json_data={
-            "query": {"pages": {"1": {"title": "Page1", "canonicalurl": "https://example.com/Page1", "revisions": [{"timestamp": "2024-01-01T00:00:00Z"}]}}}
-        })
-        allpages_ns4 = _mock_response(json_data={
-            "query": {"pages": {"2": {"title": "Project:About", "canonicalurl": "https://example.com/Project:About", "revisions": [{"timestamp": "2024-01-02T00:00:00Z"}]}}}
-        })
-        mock_session.get.side_effect = [siteinfo_resp, allpages_ns0, allpages_ns4]
+        }
+        mock_site_cls.return_value = mock_site
+
+        reader = _make_reader()
+        ids = reader._fetch_content_namespace_ids()
+        assert ids == [0, 4]
+
+    @patch("llama_index.readers.mediawiki.base.mwclient.Site")
+    def test_defaults_to_zero_on_empty(self, mock_site_cls):
+        mock_site = _mock_site()
+        mock_site.get.return_value = {"query": {"namespaces": {}}}
+        mock_site_cls.return_value = mock_site
+
+        reader = _make_reader()
+        assert reader._fetch_content_namespace_ids() == [0]
+
+    @patch("llama_index.readers.mediawiki.base.mwclient.Site")
+    def test_defaults_to_zero_on_api_error(self, mock_site_cls):
+        import mwclient.errors
+
+        mock_site = _mock_site()
+        mock_site.get.side_effect = mwclient.errors.APIError(
+            "error", "info", {}
+        )
+        mock_site_cls.return_value = mock_site
+
+        reader = _make_reader()
+        assert reader._fetch_content_namespace_ids() == [0]
+
+
+# ---------------------------------------------------------------------------
+# All-pages generator
+# ---------------------------------------------------------------------------
+
+class TestGetAllPages:
+    """Page listing via mwclient's allpages."""
+
+    @patch("llama_index.readers.mediawiki.base.mwclient.Site")
+    def test_iterates_pages(self, mock_site_cls):
+        mock_site = _mock_site()
+        mock_page = MagicMock()
+        mock_page.name = "Page 1"
+        mock_page.revision = True
+        mock_page.last_rev_time = (2024, 1, 1, 12, 0, 0, 0, 0, 0)
+        mock_site.allpages.return_value = [mock_page]
+        mock_site_cls.return_value = mock_site
+
+        reader = _make_reader(namespaces=[0])
+        pages = list(reader._get_all_pages_generator())
+
+        assert len(pages) == 1
+        assert pages[0]["title"] == "Page 1"
+        assert pages[0]["url"] == "https://example.com/wiki/Page_1"
+        assert pages[0]["last_modified"].year == 2024
+
+    @patch("llama_index.readers.mediawiki.base.mwclient.Site")
+    def test_multiple_namespaces(self, mock_site_cls):
+        mock_site = _mock_site()
+        page_ns0 = MagicMock()
+        page_ns0.name = "Main Page"
+        page_ns0.revision = True
+        page_ns0.last_rev_time = (2024, 1, 1, 0, 0, 0, 0, 0, 0)
+
+        page_ns4 = MagicMock()
+        page_ns4.name = "Project:About"
+        page_ns4.revision = True
+        page_ns4.last_rev_time = (2024, 2, 1, 0, 0, 0, 0, 0, 0)
+
+        mock_site.allpages.side_effect = [[page_ns0], [page_ns4]]
+        mock_site_cls.return_value = mock_site
+
+        reader = _make_reader(namespaces=[0, 4])
+        pages = list(reader._get_all_pages_generator())
+
+        assert len(pages) == 2
+        assert pages[0]["title"] == "Main Page"
+        assert pages[1]["title"] == "Project:About"
+        assert mock_site.allpages.call_count == 2
+
+    @patch("llama_index.readers.mediawiki.base.mwclient.Site")
+    def test_auto_discovers_content_namespaces(self, mock_site_cls):
+        """When namespaces is None, calls siteinfo to find content namespaces."""
+        mock_site = _mock_site()
+        mock_site.get.return_value = {
+            "query": {
+                "namespaces": {
+                    "0": {"id": 0, "*": "", "content": True},
+                }
+            }
+        }
+        page = MagicMock()
+        page.name = "Test"
+        page.revision = True
+        page.last_rev_time = (2024, 6, 1, 0, 0, 0, 0, 0, 0)
+        mock_site.allpages.return_value = [page]
+        mock_site_cls.return_value = mock_site
 
         reader = _make_reader(namespaces=None)
         pages = list(reader._get_all_pages_generator())
 
-        assert mock_session.get.call_count == 3
-        first_params = mock_session.get.call_args_list[0][1]["params"]
-        assert first_params["action"] == "query"
-        assert first_params["meta"] == "siteinfo"
-        assert first_params["siprop"] == "namespaces"
-        assert mock_session.get.call_args_list[1][1]["params"]["gapnamespace"] == 0
-        assert mock_session.get.call_args_list[2][1]["params"]["gapnamespace"] == 4
-        assert len(pages) == 2
-        assert pages[0]["title"] == "Page1"
-        assert pages[1]["title"] == "Project:About"
+        mock_site.get.assert_called_once()
+        assert len(pages) == 1
 
-    def test_fetch_content_namespace_ids(self, mock_session):
-        """_fetch_content_namespace_ids returns IDs where content is true; fallback to [0] on failure."""
-        reader = _make_reader()
-
-        mock_session.get.return_value = _mock_response(json_data={
-            "query": {
-                "namespaces": {
-                    "0": {"id": 0, "*": "", "content": True},
-                    "4": {"id": 4, "*": "Project", "content": True},
-                }
-            }
-        })
-        ids = reader._fetch_content_namespace_ids()
-        assert ids == [0, 4]
-
-        mock_session.get.return_value = _mock_response(json_data={})
-        ids_empty = reader._fetch_content_namespace_ids()
-        assert ids_empty == [0]
-
-    def test_fetch_content_namespace_ids_returns_none(self, mock_session):
-        """When _make_api_request returns None (e.g. network failure), fallback to [0]."""
-        reader = _make_reader()
-        mock_session.get.side_effect = requests.exceptions.RequestException("network error")
-        ids = reader._fetch_content_namespace_ids()
-        assert ids == [0]
-
-    def test_content_namespaces_cache_fetched_once(self, mock_session):
-        """Second call to _get_all_pages_generator() does not refetch siteinfo; cache is per instance."""
-        siteinfo_resp = _mock_response(json_data={
+    @patch("llama_index.readers.mediawiki.base.mwclient.Site")
+    def test_content_ns_cache(self, mock_site_cls):
+        """Content namespace IDs are cached after first call."""
+        mock_site = _mock_site()
+        mock_site.get.return_value = {
             "query": {
                 "namespaces": {
                     "0": {"id": 0, "*": "", "content": True},
                 }
             }
-        })
-        allpages_resp = _mock_response(json_data={
-            "query": {"pages": {"1": {"title": "A", "canonicalurl": "https://example.com/A", "revisions": [{"timestamp": "2024-01-01T00:00:00Z"}]}}}
-        })
-        mock_session.get.side_effect = [siteinfo_resp, allpages_resp, allpages_resp]
+        }
+        page = MagicMock()
+        page.name = "A"
+        page.revision = True
+        page.last_rev_time = (2024, 1, 1, 0, 0, 0, 0, 0, 0)
+        mock_site.allpages.return_value = [page]
+        mock_site_cls.return_value = mock_site
 
         reader = _make_reader(namespaces=None)
         list(reader._get_all_pages_generator())
         list(reader._get_all_pages_generator())
 
-        call_params_list = [c[1]["params"] for c in mock_session.get.call_args_list]
-        siteinfo_calls = [p for p in call_params_list if p.get("meta") == "siteinfo" and p.get("siprop") == "namespaces"]
-        assert len(siteinfo_calls) == 1
+        # siteinfo should be called only once
+        assert mock_site.get.call_count == 1
 
+
+# ---------------------------------------------------------------------------
+# Page content retrieval
+# ---------------------------------------------------------------------------
 
 class TestGetPageContents:
-    """Content retrieval via parse action."""
+    """Content retrieval via Site.parse()."""
 
-    def test_success(self, reader, mock_session):
-        """_get_page_contents returns raw HTML; caller converts via _html_to_clean_text."""
-        parse_resp = _mock_response(json_data={
-            "parse": {"text": {"*": "<p>Test page content with <a href='/wiki/Links'>links</a>.</p>"}}
-        })
-        mock_session.get.return_value = parse_resp
+    @patch("llama_index.readers.mediawiki.base.mwclient.Site")
+    def test_success(self, mock_site_cls):
+        mock_site = _mock_site()
+        mock_site.parse.return_value = {
+            "text": {"*": "<p>Test page content.</p>"}
+        }
+        mock_site_cls.return_value = mock_site
 
+        reader = _make_reader()
         result = reader._get_page_contents("Test Page")
+
         assert result is not None
         assert "Test page content" in result
-        assert "<p>" in result  # raw HTML, not converted to text yet
-        assert mock_session.get.call_count == 1
+        assert "<p>" in result  # raw HTML
+        mock_site.parse.assert_called_once_with(page="Test Page", prop="text")
 
-    def test_no_parse_result(self, reader, mock_session):
-        mock_session.get.return_value = _mock_response(json_data={})
+    @patch("llama_index.readers.mediawiki.base.mwclient.Site")
+    def test_empty_parse_result(self, mock_site_cls):
+        mock_site = _mock_site()
+        mock_site.parse.return_value = {}
+        mock_site_cls.return_value = mock_site
+
+        reader = _make_reader()
         assert reader._get_page_contents("Missing") is None
 
+    @patch("llama_index.readers.mediawiki.base.mwclient.Site")
+    def test_api_error_returns_none(self, mock_site_cls):
+        import mwclient.errors
+
+        mock_site = _mock_site()
+        mock_site.parse.side_effect = mwclient.errors.APIError(
+            "error", "info", {}
+        )
+        mock_site_cls.return_value = mock_site
+
+        reader = _make_reader()
+        assert reader._get_page_contents("Broken") is None
+
+
+# ---------------------------------------------------------------------------
+# HTML-to-text conversion
+# ---------------------------------------------------------------------------
 
 class TestHtmlToCleanText:
-    """HTML-to-text conversion."""
+    """HTML-to-text conversion (no mocking needed)."""
 
-    def test_basic_html(self, reader):
-        result = reader._html_to_clean_text("<p>Hello <b>world</b></p>")
+    def test_basic_html(self):
+        result = MediaWikiReader._html_to_clean_text(
+            "<p>Hello <b>world</b></p>"
+        )
         assert "Hello" in result
         assert "world" in result
 
-    def test_preserves_structure(self, reader):
+    def test_preserves_structure(self):
         html = (
             "<h1>Title</h1>"
             "<p>Paragraph with <em>emphasis</em> and <strong>strong</strong>.</p>"
             "<ul><li>Item 1</li><li>Item 2</li></ul>"
         )
-        result = reader._html_to_clean_text(html)
+        result = MediaWikiReader._html_to_clean_text(html)
         assert "Title" in result
         assert "Item 1" in result
         assert "Item 2" in result
 
 
+# ---------------------------------------------------------------------------
+# Resource interface
+# ---------------------------------------------------------------------------
+
 class TestResourcesInterface:
     """Public resource-based API."""
 
-    def test_load_resource_with_prefetched_metadata(self, reader, mock_session):
-        """load_resource with resource_url and last_modified only performs parse call."""
-        parse_resp = _mock_response(json_data={
-            "parse": {"text": {"*": "<p>Content</p>"}}
-        })
-        mock_session.get.return_value = parse_resp
+    @patch("llama_index.readers.mediawiki.base.mwclient.Site")
+    def test_load_resource(self, mock_site_cls):
+        mock_site = _mock_site()
+        mock_site.parse.return_value = {"text": {"*": "<p>Content</p>"}}
+        mock_site_cls.return_value = mock_site
 
+        reader = _make_reader()
         timestamp = datetime(2024, 2, 1, 10, 0, 0, tzinfo=timezone.utc)
         docs = reader.load_resource(
             "P", resource_url="https://wiki.com/P", last_modified=timestamp
@@ -348,35 +373,15 @@ class TestResourcesInterface:
         assert docs[0].text == "Content"
         assert docs[0].metadata["url"] == "https://wiki.com/P"
         assert docs[0].metadata["last_modified"] == timestamp.isoformat()
+        mock_site.parse.assert_called_once()
 
-        # Should only call 'parse', not 'info' or 'revisions'
-        mock_session.get.assert_called_once()
-        args, kwargs = mock_session.get.call_args
-        assert kwargs["params"]["action"] == "parse"
+    @patch("llama_index.readers.mediawiki.base.mwclient.Site")
+    def test_load_resource_missing_page(self, mock_site_cls):
+        mock_site = _mock_site()
+        mock_site.parse.return_value = {}
+        mock_site_cls.return_value = mock_site
 
-    def test_load_resource_with_required_url_and_timestamp(self, reader, mock_session):
-        """load_resource requires resource_url and last_modified; only calls parse."""
-        parse_resp = _mock_response(json_data={
-            "parse": {"text": {"*": "Content"}}
-        })
-        mock_session.get.return_value = parse_resp
-
-        timestamp = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
-        docs = reader.load_resource(
-            "Page",
-            resource_url="https://example.com/wiki/Page",
-            last_modified=timestamp,
-        )
-        assert len(docs) == 1
-        assert "Content" in docs[0].text
-        assert docs[0].metadata["url"] == "https://example.com/wiki/Page"
-        assert docs[0].metadata["title"] == "Page"
-        mock_session.get.assert_called_once()
-        assert mock_session.get.call_args[1]["params"]["action"] == "parse"
-
-    def test_load_resource_missing_page(self, reader, mock_session):
-        """When parse returns no content, load_resource returns []."""
-        mock_session.get.return_value = _mock_response(json_data={})
+        reader = _make_reader()
         docs = reader.load_resource(
             "Missing",
             resource_url="https://example.com/wiki/Missing",
@@ -384,18 +389,63 @@ class TestResourcesInterface:
         )
         assert docs == []
 
-    def test_get_resource_info(self, reader, mock_session):
-        """get_resource_info returns url and last_modified for a single page."""
-        mock_session.get.return_value = _mock_response(json_data={
-            "query": {"pages": {"123": {
-                "pageid": 123, "title": "Page",
-                "canonicalurl": "https://example.com/wiki/Page",
-                "revisions": [{"timestamp": "2024-06-01T00:00:00Z"}],
-            }}}
-        })
+    @patch("llama_index.readers.mediawiki.base.mwclient.Site")
+    def test_get_resource_info(self, mock_site_cls):
+        mock_site = _mock_site()
+        mock_site.get.return_value = {
+            "query": {
+                "pages": {
+                    "123": {
+                        "pageid": 123,
+                        "title": "Page",
+                        "canonicalurl": "https://example.com/wiki/Page",
+                        "revisions": [
+                            {"timestamp": "2024-06-01T00:00:00Z"}
+                        ],
+                    }
+                }
+            }
+        }
+        mock_site_cls.return_value = mock_site
 
+        reader = _make_reader()
         info = reader.get_resource_info("Page")
-        assert "last_modified" in info
-        assert "url" in info
+
         assert info["url"] == "https://example.com/wiki/Page"
-        assert mock_session.get.call_count == 1
+        assert info["last_modified"] is not None
+        assert info["last_modified"].year == 2024
+        mock_site.get.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# lazy_load_data
+# ---------------------------------------------------------------------------
+
+class TestLazyLoadData:
+    """End-to-end integration via lazy_load_data."""
+
+    @patch("llama_index.readers.mediawiki.base.mwclient.Site")
+    def test_yields_documents(self, mock_site_cls):
+        mock_site = _mock_site()
+
+        # allpages returns mwclient Page objects
+        page = MagicMock()
+        page.name = "Test Page"
+        page.revision = True
+        page.last_rev_time = (2024, 1, 1, 12, 0, 0, 0, 0, 0)
+        mock_site.allpages.return_value = [page]
+
+        # parse returns HTML
+        mock_site.parse.return_value = {
+            "text": {"*": "<p>Hello world</p>"}
+        }
+
+        mock_site_cls.return_value = mock_site
+
+        reader = _make_reader(namespaces=[0])
+        docs = list(reader.lazy_load_data())
+
+        assert len(docs) == 1
+        assert "Hello world" in docs[0].text
+        assert docs[0].metadata["title"] == "Test Page"
+        assert "example.com" in docs[0].metadata["url"]
