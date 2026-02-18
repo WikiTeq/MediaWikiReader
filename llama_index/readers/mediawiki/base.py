@@ -9,6 +9,7 @@ import logging
 import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterator, List, Optional
+from urllib.parse import urlparse
 
 import html2text
 import mwclient
@@ -198,8 +199,6 @@ class MediaWikiReader(BasePydanticReader):
                     if base_url:
                         # base is e.g. "https://en.wikipedia.org/wiki/Main_Page"
                         # We need just the origin
-                        from urllib.parse import urlparse
-
                         parsed = urlparse(base_url)
                         origin = f"{parsed.scheme}://{parsed.netloc}"
                         url = origin + article_path.replace(
@@ -218,8 +217,6 @@ class MediaWikiReader(BasePydanticReader):
                         )
                         # mwclient stores revisions; .revision is the
                         # latest revision timestamp as a time.struct_time
-                        import time as _time
-
                         ts = page.last_rev_time
                         if ts:
                             last_modified = datetime(
